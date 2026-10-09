@@ -1,1 +1,13 @@
-{ "name": "@masterchief/tui", "version": "0.0.0", "type": "module", "main": "dist/index.js", "types": "dist/index.d.ts", "dependencies": { "@masterchief/core": "*" } }
+{
+  "name": "@masterchief/tui",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@masterchief/core": "*"
+  },
+  "bin": {
+    "mc-tui": "dist/main.js"
+  }
+}
