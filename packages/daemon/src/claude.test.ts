@@ -86,3 +86,13 @@ test('classification: a gone process wins, other incarnations are ignored, and g
   expect(await classifyAgent({ harness: claudeHarness, endpoint: 'alive', hookLog: null, gen: null })).toMatchObject({ state: 'unknown', source: 'no-hook-record' });
   expect(await classifyAgent({ harness: { ...claudeHarness, semanticBusy: false }, endpoint: 'alive', hookLog: log, gen: l.gen })).toMatchObject({ state: 'unknown', source: 'no-semantic-source' });
 });
+
+test('a guard command becomes a PreToolUse hook for every tool, and unsafe arguments are refused', async () => {
+  const l = await prep({ guardCommand: ['/usr/bin/node', '/opt/guard.js', '--role', 'pilot', '--worktree', '/w/t'] });
+  const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
+  expect(settings.hooks.PreToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: "'/usr/bin/node' '/opt/guard.js' '--role' 'pilot' '--worktree' '/w/t'" }] }]);
+  expect(Object.keys(settings.hooks)).toContain('Stop');
+  const without = JSON.parse(await readFile((await prep()).command.at(2)!, 'utf8'));
+  expect(without.hooks.PreToolUse).toBeUndefined();
+  await expect(prep({ guardCommand: ['/bin/node', "it's"] })).rejects.toThrow(/unsafe argument/);
+});

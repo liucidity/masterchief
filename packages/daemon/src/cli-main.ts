@@ -18,6 +18,7 @@ const mc = new Mc({
   worktrees: freshWorktrees,
   home,
   cliPath: fileURLToPath(import.meta.url),
+  guardPath: fileURLToPath(new URL('./guard-main.js', import.meta.url)),
   extraEnv: process.env.MC_TMUX_SOCKET ? { MC_TMUX_SOCKET: process.env.MC_TMUX_SOCKET } : {},
 });
 process.exitCode = await runCli(process.argv.slice(2), mc, {

@@ -30,6 +30,8 @@ export interface McDeps {
   enterDelayMs?: number;
   /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
   cliPath?: string;
+  /** Path to the compiled guard entrypoint. Crew members run it before every tool call. */
+  guardPath?: string;
   /** Extra environment for every agent, such as the tmux socket name. */
   extraEnv?: Record<string, string>;
 }
@@ -451,6 +453,18 @@ export class Mc {
         permissionMode: o.permissionMode,
         appendSystemPrompt: this.contract(role, ws, task, mission),
         initialPrompt: o.brief,
+        guardCommand: this.d.guardPath
+          ? [
+              process.execPath,
+              '--disable-warning=ExperimentalWarning',
+              this.d.guardPath,
+              '--role',
+              role,
+              '--worktree',
+              ws.worktreePath,
+              ...(role === 'sentinel' ? ['--report-dir', join(this.dataDir, task.id)] : []),
+            ]
+          : undefined,
         trust: o.trust,
       });
       const env = agentEnv(ws, slot);

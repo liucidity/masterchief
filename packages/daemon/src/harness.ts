@@ -17,6 +17,8 @@ export interface HarnessPrepareOptions {
   allowTools?: string[];
   /** Tools removed from the CLI entirely. */
   denyTools?: string[];
+  /** Program and arguments the CLI runs before every tool call; exit code 2 blocks the call. */
+  guardCommand?: string[];
   /** Continue the most recent conversation in this directory instead of starting fresh. */
   resume?: boolean;
   /** The first message the agent receives, delivered at launch so no ready-detection is needed. */

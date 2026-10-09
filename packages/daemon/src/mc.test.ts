@@ -194,3 +194,14 @@ test('events advance a cursor unless peeked or given an explicit position', asyn
   expect(mc.events()).toHaveLength(0);
   expect(mc.events({ after: 0 })).toHaveLength(1);
 });
+
+test('with a guard path, crew members launch with a guard command scoped to their role and worktree', async () => {
+  const seen: Array<string[] | undefined> = [];
+  const spy = { ...fakeHarness, prepare: async (o: Parameters<typeof fakeHarness.prepare>[0]) => (seen.push(o.guardCommand), fakeHarness.prepare(o)) };
+  mc = new Mc({ store, tmux, worktrees: freshWorktrees, home, guardPath: '/opt/mc/guard-main.js', harnessFor: () => spy });
+  const { mission } = await setup();
+  const pilot = await spawn(mission.id);
+  const sentinel = await mc.spawn({ missionId: mission.id, kind: 'sentinel', title: 's', harness: 'fake', trust: false });
+  expect(seen[0]).toEqual([process.execPath, '--disable-warning=ExperimentalWarning', '/opt/mc/guard-main.js', '--role', 'pilot', '--worktree', pilot.worktree]);
+  expect(seen[1]).toEqual(expect.arrayContaining(['--role', 'sentinel', '--report-dir', join(home, 'data', sentinel.taskId)]));
+});

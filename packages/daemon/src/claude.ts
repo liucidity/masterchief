@@ -26,8 +26,14 @@ function hookCommand(log: string, gen: string, event: string): string {
 }
 
 /** Per-agent settings that report turn lifecycle through the hook log. */
-export function claudeHookSettings(log: string, gen: string): object {
+export function claudeHookSettings(log: string, gen: string, guard?: string[]): object {
   const hooks: Record<string, unknown> = {};
+  if (guard) {
+    for (const part of guard) {
+      if (!SAFE_PATH.test(part)) throw new Error(`unsafe argument for a claude guard hook: ${part}`);
+    }
+    hooks.PreToolUse = [{ matcher: '*', hooks: [{ type: 'command', command: guard.map((p) => `'${p}'`).join(' ') }] }];
+  }
   for (const [name, event] of Object.entries(HOOK_EVENTS)) {
     hooks[name] = [{ hooks: [{ type: 'command', command: hookCommand(log, gen, event) }] }];
   }
@@ -86,7 +92,7 @@ export const claudeHarness: Harness = {
     const gen = randomUUID();
     await mkdir(opts.stateDir, { recursive: true });
     const settingsFile = join(opts.stateDir, `${opts.agentId}.settings.json`);
-    await writeFile(settingsFile, JSON.stringify(claudeHookSettings(log, gen), null, 2));
+    await writeFile(settingsFile, JSON.stringify(claudeHookSettings(log, gen, opts.guardCommand), null, 2));
     if (opts.trust !== false) await registerClaudeTrust([opts.cwd], opts.trust?.configFile);
 
     const command = ['claude', '--settings', settingsFile, '--permission-mode', opts.permissionMode ?? 'bypassPermissions'];
