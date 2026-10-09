@@ -40,8 +40,13 @@ export class TmuxBackend implements SessionBackend {
 
   async create(opts: CreateSessionOptions): Promise<string> {
     await this.prepareServer();
-    const envArgs = Object.entries(opts.env ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
-    const base = ['-d', '-P', '-F', '#{window_id}', '-n', opts.name, '-c', opts.cwd, ...envArgs, ...(opts.command ?? [])];
+    const entries = Object.entries(opts.env ?? {});
+    for (const [k] of entries) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) throw new Error(`invalid environment variable name: ${k}`);
+    // tmux ignores -e for some variables (PATH among them), so a command gets its environment
+    // from `env`, which always wins. Only a default shell falls back to -e.
+    const viaEnv = opts.command?.length ? ['env', ...entries.map(([k, v]) => `${k}=${v}`), ...opts.command] : [];
+    const envArgs = viaEnv.length ? [] : entries.flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const base = ['-d', '-P', '-F', '#{window_id}', '-n', opts.name, '-c', opts.cwd, ...envArgs, ...(viaEnv.length ? viaEnv : (opts.command ?? []))];
     let id: string;
     try {
       id = await this.tmux('new-window', '-t', `${this.session}:`, ...base);

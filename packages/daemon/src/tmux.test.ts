@@ -74,3 +74,15 @@ test('multi-line text arrives as a single paste', async () => {
     return s.includes('line one') && s.includes('line two');
   });
 });
+
+test('PATH and other variables reach the program even though tmux ignores -e for some of them', async () => {
+  const ep = await tmux.create({
+    name: 'envcheck',
+    cwd: dir,
+    env: { PATH: '/my/shim/bin:/usr/bin:/bin', MC_X: 'a=b c' },
+    command: ['sh', '-c', 'echo path=$PATH; echo x=$MC_X; sleep 30'],
+  });
+  await waitFor(async () => (await tmux.capture(ep)).includes('x=a=b c'));
+  expect(await tmux.capture(ep)).toContain('path=/my/shim/bin:/usr/bin:/bin');
+  await expect(tmux.create({ name: 'bad', cwd: dir, env: { 'BAD NAME': '1' }, command: ['true'] })).rejects.toThrow(/invalid environment variable name/);
+});
