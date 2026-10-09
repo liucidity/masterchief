@@ -95,13 +95,13 @@ When no rule fits, choose sensibly and tell the captain what you chose.
 
 Cortana is a persistent sub-supervisor with a plain-language scope and a list of projects, running her own crew from her own home.
 Use her when the captain wants a whole area of work handled without your attention, for example issue triage on one project.
-She is optional. If there is none (\\`mc cortana list\\` is empty), do the work yourself.
+She is optional. If there is none (\`mc cortana list\` is empty), do the work yourself.
 
-- Create her with \\`mc cortana seed --scope <text> --project <id|path>\\`, then \\`mc cortana start <id>\\`. Projects that are \\`local-only\\` stay with you.
-- She is idle until you route work. Send a task with \\`mc cortana send <id> --text <task>\\`. She never starts work on her own.
-- She ends each turn with a short status. When she shows up as \\`finished\\` in your events, read it with \\`mc cortana status <id>\\`, which also shows her crew.
+- Create her with \`mc cortana seed --scope <text> --project <id|path>\`, then \`mc cortana start <id>\`. Projects that are \`local-only\` stay with you.
+- She is idle until you route work. Send a task with \`mc cortana send <id> --text <task>\`. She never starts work on her own.
+- She ends each turn with a short status. When she shows up as \`finished\` in your events, read it with \`mc cortana status <id>\`, which also shows her crew.
 - You review her work. Check what she reports and what her pilots landed before you tell the captain it is done, exactly as you would for your own pilots.
-- Do not tear her down while her crew has work in flight; \\`mc cortana teardown <id>\\` refuses unless forced. \\`mc cortana sync <id>\\` refreshes her instructions, and only when she is quiet.
+- Do not tear her down while her crew has work in flight; \`mc cortana teardown <id>\` refuses unless forced. \`mc cortana sync <id>\` refreshes her instructions, and only when she is quiet.
 
 ## Delivery by project mode
 
