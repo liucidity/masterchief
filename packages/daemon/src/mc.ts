@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Agent, DeliveryMode, Mission, MissionType, Project, Store, Task, TaskKind, Workspace } from '@masterchief/core';
 import { classifyAgent, type BusyVerdict } from './busy.js';
 import { git } from './git.js';
 import { getHarness, type Harness } from './harness.js';
 import type { SessionBackend } from './session-backend.js';
+import { Watcher, type WatcherOptions } from './watcher.js';
 import { agentEnv } from './workspace.js';
 import type { WorktreeProvider } from './worktree-provider.js';
 
@@ -75,6 +76,37 @@ export class Mc {
     if (hits.length === 1) return hits[0]!;
     if (hits.length > 1) throw new McError(`ambiguous ${kind} reference: ${ref}`);
     throw new McError(`${kind} not found: ${ref}`);
+  }
+
+  /** Only one watcher may run at a time. Returns a function that releases the lock. */
+  async acquireWatchLock(): Promise<() => Promise<void>> {
+    const file = join(this.d.home, 'watch.pid');
+    await mkdir(this.d.home, { recursive: true });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await writeFile(file, String(process.pid), { flag: 'wx' });
+        return () => rm(file, { force: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+        const pid = Number(await readFile(file, 'utf8').catch(() => ''));
+        let alive = false;
+        if (pid > 0) {
+          try {
+            process.kill(pid, 0);
+            alive = true;
+          } catch {
+            alive = false;
+          }
+        }
+        if (alive) throw new McError(`a watcher is already running (pid ${pid})`);
+        await rm(file, { force: true });
+      }
+    }
+    throw new McError('could not take the watcher lock');
+  }
+
+  watcher(opts?: WatcherOptions): Watcher {
+    return new Watcher(this, this.d.store, this.d.tmux, opts);
   }
 
   // ---- projects and missions -------------------------------------------------

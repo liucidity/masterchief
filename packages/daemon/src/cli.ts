@@ -5,6 +5,8 @@ import { McError, type Mc } from './mc.js';
 export interface CliIO {
   out(text: string): void;
   err(text: string): void;
+  /** Ends long-running commands such as watch. Defaults to SIGINT and SIGTERM. */
+  signal?: AbortSignal;
 }
 
 const HELP = `mc - control the MasterChief crew
@@ -19,6 +21,7 @@ const HELP = `mc - control the MasterChief crew
   mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter]
   mc teardown <task|agent> [--force] [--outcome done|failed]
   mc events [--after <seq>] [--peek] [--mission <id>]
+  mc watch [--interval <ms>] [--once] [--unknown-after <s>] [--stale-after <s>]
   mc harnesses
 
 Every command prints JSON. Errors go to stderr with exit code 1.`;
@@ -120,6 +123,31 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       case 'events': {
         const { values } = parseArgs({ args: rest, options: { after: { type: 'string' }, peek: { type: 'boolean' }, mission: { type: 'string' } } });
         print(mc.events({ after: values.after !== undefined ? Number(values.after) : undefined, peek: values.peek, mission: values.mission }));
+        return 0;
+      }
+
+      case 'watch': {
+        const { values } = parseArgs({
+          args: rest,
+          options: { interval: { type: 'string' }, once: { type: 'boolean' }, 'unknown-after': { type: 'string' }, 'stale-after': { type: 'string' } },
+        });
+        const w = mc.watcher({
+          unknownAfterSecs: values['unknown-after'] ? Number(values['unknown-after']) : undefined,
+          staleAfterSecs: values['stale-after'] ? Number(values['stale-after']) : undefined,
+        });
+        if (values.once) return (print(await w.tick()), 0);
+        const release = await mc.acquireWatchLock();
+        const ctl = new AbortController();
+        const stop = () => ctl.abort();
+        const signals = io.signal ? [] : (['SIGINT', 'SIGTERM'] as const);
+        for (const s of signals) process.once(s, stop);
+        io.signal?.addEventListener('abort', stop, { once: true });
+        try {
+          await w.run(ctl.signal, values.interval ? Number(values.interval) : undefined);
+        } finally {
+          for (const s of signals) process.off(s, stop);
+          await release();
+        }
         return 0;
       }
 

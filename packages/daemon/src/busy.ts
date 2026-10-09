@@ -10,6 +10,8 @@ export interface BusyVerdict {
   source: string;
   /** The hook event behind the verdict, when there was one. */
   event?: string;
+  /** Epoch seconds of that event. */
+  since?: number;
 }
 
 const EVENT_STATE: Record<string, BusyState> = {
@@ -53,5 +55,5 @@ export async function classifyAgent(args: {
   if (!args.hookLog || !args.gen) return { state: 'unknown', source: 'no-hook-record' };
   const last = await lastHookEvent(args.hookLog, args.gen);
   if (!last) return { state: 'unknown', source: 'no-events-yet' };
-  return { state: EVENT_STATE[last.event]!, source: 'hooks', event: last.event };
+  return { state: EVENT_STATE[last.event]!, source: 'hooks', event: last.event, since: last.ts };
 }

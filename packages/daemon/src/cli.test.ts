@@ -107,3 +107,41 @@ test('errors are reported on stderr with exit code 1', async () => {
     expect(r.err, argv.join(' ')).toMatch(/^error: /);
   }
 });
+
+test('watch --once records events, and a second long-running watcher is refused', async () => {
+  const project = (await run('project', 'add', repo)).json;
+  const mission = (await run('mission', 'new', '--project', project.id, '--type', 'build', '--goal', 'g')).json;
+  const spawned = (await run('spawn', '--mission', mission.id, '--kind', 'ship', '--title', 't', '--harness', 'fake', '--brief', 'job')).json;
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline && (await run('status', spawned.agentId)).json.verdict.state !== 'idle') {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  const once = await run('watch', '--once');
+  expect(once.json.map((e: { kind: string }) => e.kind)).toEqual(['finished']);
+
+  const ctl = new AbortController();
+  const first = runCli(['watch', '--interval', '20'], mc, { out: () => {}, err: () => {}, signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 150));
+  const second = await run('watch', '--interval', '20');
+  expect(second.code).toBe(1);
+  expect(second.err).toContain('already running');
+  ctl.abort();
+  expect(await first).toBe(0);
+  // The lock is released: a new watcher can start and stop.
+  const ctl2 = new AbortController();
+  const again = runCli(['watch', '--interval', '20'], mc, { out: () => {}, err: () => {}, signal: ctl2.signal });
+  await new Promise((r) => setTimeout(r, 100));
+  ctl2.abort();
+  expect(await again).toBe(0);
+});
+
+test('a stale watcher lock from a dead process is replaced', async () => {
+  const { writeFile: write, mkdir } = await import('node:fs/promises');
+  await mkdir(home, { recursive: true });
+  await write(join(home, 'watch.pid'), '999999');
+  const ctl = new AbortController();
+  const w = runCli(['watch', '--interval', '20'], mc, { out: () => {}, err: () => {}, signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 100));
+  ctl.abort();
+  expect(await w).toBe(0);
+});
