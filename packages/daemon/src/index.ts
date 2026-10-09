@@ -12,3 +12,4 @@ export * from './commander-instructions.js';
 export * from './guard.js';
 export * from './codex.js';
 export * from './cortana.js';
+export * from './afk.js';

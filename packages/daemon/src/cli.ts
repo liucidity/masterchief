@@ -29,6 +29,7 @@ const HELP = `mc - control the MasterChief crew
   mc watch --status | --background | --stop
   mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
   mc commander stop | mc commander status
+  mc afk start [--note <text>] | stop | status | brief [--last]
   mc attach
   mc cortana seed --scope <text> --project <id|path> [--project ...] [--id <slug>] [--harness <h>]
   mc cortana list | start <id> [--fresh] | send <id> --text <t> | status <id> | sync <id>
@@ -48,7 +49,7 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
 };
 
 /** Every top-level command, for checks that documentation mentions only real ones. */
-export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'cortana', 'attach', 'harnesses', 'help'];
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'cortana', 'afk', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -249,6 +250,40 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
             return 0;
           default:
             throw new McError('usage: mc cortana seed|list|start|send|status|sync|teardown');
+        }
+      }
+
+      case 'afk': {
+        const [sub, ...a] = rest;
+        const { values } = parseArgs({ args: a, options: { note: { type: 'string' }, last: { type: 'boolean' }, interval: { type: 'string' } } });
+        switch (sub) {
+          case 'start':
+            print(await mc.afk.start({ note: values.note }));
+            return 0;
+          case 'stop':
+            print(await mc.afk.stop());
+            return 0;
+          case 'status':
+            print(await mc.afk.status());
+            return 0;
+          case 'brief':
+            print(mc.afk.brief({ last: values.last }));
+            return 0;
+          case 'run': {
+            const ctl = new AbortController();
+            const stop = () => ctl.abort();
+            const signals = io.signal ? [] : (['SIGINT', 'SIGTERM'] as const);
+            for (const s of signals) process.once(s, stop);
+            io.signal?.addEventListener('abort', stop, { once: true });
+            try {
+              await mc.afk.run(ctl.signal, values.interval ? Number(values.interval) : undefined);
+            } finally {
+              for (const s of signals) process.off(s, stop);
+            }
+            return 0;
+          }
+          default:
+            throw new McError('usage: mc afk start|stop|status|brief|run');
         }
       }
 

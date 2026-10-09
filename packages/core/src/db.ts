@@ -58,6 +58,10 @@ const MIGRATIONS = [
    ALTER TABLE agent ADD COLUMN slot INTEGER;`,
   `CREATE UNIQUE INDEX agent_slot_unique ON agent(slot) WHERE slot IS NOT NULL;`,
   `ALTER TABLE review ADD COLUMN task_id TEXT REFERENCES task(id);`,
+  `CREATE TABLE afk_item (
+     id TEXT PRIMARY KEY, event_seq INTEGER NOT NULL UNIQUE, kind TEXT NOT NULL,
+     needs_human INTEGER NOT NULL, agent_id TEXT, task_id TEXT, summary TEXT NOT NULL,
+     detail TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, archived_at INTEGER);`,
 ];
 
 export function openDb(path = ':memory:'): DatabaseSync {

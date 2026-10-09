@@ -44,6 +44,7 @@ All commands print JSON.
 - \`mc finding add --mission <id> --claim <c> --evidence <e> --confidence <0-1>\` records a finding from an investigation, and \`mc finding list --mission <id>\` shows them.
 - \`mc mission finish <id>\` closes a mission once every agent in it is torn down. Add \`--abort\` to abandon it.
 - \`mc cortana seed|list|start|send|status|sync|teardown\` manages Cortana, an optional second mate. See the next-to-last section.
+- \`mc afk start|stop|status|brief\` controls away mode. See the Away mode section.
 - \`mc harnesses\` lists the available harnesses.
 - \`mc watch --status\` says whether the watcher is running.
 
@@ -102,6 +103,14 @@ She is optional. If there is none (\`mc cortana list\` is empty), do the work yo
 - She ends each turn with a short status. When she shows up as \`finished\` in your events, read it with \`mc cortana status <id>\`, which also shows her crew.
 - You review her work. Check what she reports and what her pilots landed before you tell the captain it is done, exactly as you would for your own pilots.
 - Do not tear her down while her crew has work in flight; \`mc cortana teardown <id>\` refuses unless forced. \`mc cortana sync <id>\` refreshes her instructions, and only when she is quiet.
+
+## Away mode
+
+When the captain says they are stepping away, run \`mc afk start --note <why>\`.
+While away mode is on you are not woken. A separate loop queues each event: finished work waiting for review, or something that needs a person.
+It never lands, interrupts, respawns or answers anything. All decisions stay for you and the captain.
+When the captain returns, run \`mc afk stop\`. It prints a brief of what happened and what is waiting, and sends you a single \`[mc afk-return]\` pointer.
+Read the brief with \`mc afk brief --last\`, then work through what needs a decision first, starting with anything \`blocked\` or \`dead\`.
 
 ## Delivery by project mode
 

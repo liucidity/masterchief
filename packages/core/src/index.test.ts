@@ -171,3 +171,14 @@ test('the latest review of a task wins', () => {
   store.addReview({ missionId: m.id, taskId: t.id, by: 'commander', verdict: 'approve', notes: 'fixed' });
   expect(store.latestReview(t.id)).toMatchObject({ verdict: 'approve', notes: 'fixed', taskId: t.id });
 });
+
+test('afk items are recorded once per event, listed in order, and archived on return', () => {
+  const a = store.addAfkItem({ eventSeq: 2, kind: 'blocked', needsHuman: true, agentId: 'p', taskId: null, summary: 'stuck', detail: 'tail' });
+  expect(a).toMatchObject({ needsHuman: true, archivedAt: null });
+  expect(store.addAfkItem({ eventSeq: 2, kind: 'blocked', needsHuman: true, agentId: 'p', taskId: null, summary: 'again', detail: '' })).toBeUndefined();
+  store.addAfkItem({ eventSeq: 1, kind: 'ready', needsHuman: false, agentId: 'q', taskId: 't', summary: 'done', detail: '' });
+  expect(store.listAfkItems().map((i) => i.eventSeq)).toEqual([1, 2]);
+  expect(store.archiveAfkItems(99)).toBe(2);
+  expect(store.listAfkItems()).toEqual([]);
+  expect(store.archiveAfkItems()).toBe(0);
+});

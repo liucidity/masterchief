@@ -110,6 +110,8 @@ export class Watcher {
 
   /** Nudge the Commander with a short pointer, but only between its turns and never with task text. */
   private async wake(): Promise<void> {
+    // While the captain is away the afk daemon triages; the wake is delivered on return.
+    if (this.store.isAfkActive()) return;
     const commander = this.store.listAgents().find((a) => a.role === 'commander' && a.state !== 'retired' && a.endpoint);
     if (!commander) return;
     const cursor = Number(this.store.getSetting('wake_cursor') ?? 0);

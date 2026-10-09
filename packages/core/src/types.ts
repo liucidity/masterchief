@@ -107,3 +107,18 @@ export interface CortanaHome {
   route: CortanaRoute;
   harness: string | null;
 }
+
+/** Something the afk daemon recorded while the human was away. */
+export interface AfkItem {
+  id: string;
+  /** The wake event it came from; each event is recorded at most once. */
+  eventSeq: number;
+  kind: string;
+  needsHuman: boolean;
+  agentId: string | null;
+  taskId: string | null;
+  summary: string;
+  detail: string;
+  createdAt: number;
+  archivedAt: number | null;
+}

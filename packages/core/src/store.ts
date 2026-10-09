@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import type {
   Agent,
+  AfkItem,
   AgentState,
   CortanaHome,
   DeliveryMode,
@@ -108,6 +109,19 @@ const toCortana = (r: Row): CortanaHome => ({
   homePath: r.home_path as string,
   route: r.route as CortanaHome['route'],
   harness: r.harness as string | null,
+});
+
+const toAfkItem = (r: Row): AfkItem => ({
+  id: r.id as string,
+  eventSeq: r.event_seq as number,
+  kind: r.kind as string,
+  needsHuman: r.needs_human === 1,
+  agentId: r.agent_id as string | null,
+  taskId: r.task_id as string | null,
+  summary: r.summary as string,
+  detail: r.detail as string,
+  createdAt: r.created_at as number,
+  archivedAt: r.archived_at as number | null,
 });
 
 const MISSION_TRANSITIONS: Record<MissionStatus, MissionStatus[]> = {
@@ -392,5 +406,26 @@ export class Store {
 
   deleteCortanaHome(id: string): void {
     this.db.prepare('DELETE FROM cortana_home WHERE id = ?').run(id);
+  }
+
+  /** Record an afk item once per event. Returns undefined if that event was already recorded. */
+  addAfkItem(i: Omit<AfkItem, 'id' | 'createdAt' | 'archivedAt'> & { createdAt?: number }): AfkItem | undefined {
+    const id = randomUUID();
+    const createdAt = i.createdAt ?? Date.now();
+    const res = this.db
+      .prepare(
+        'INSERT OR IGNORE INTO afk_item (id, event_seq, kind, needs_human, agent_id, task_id, summary, detail, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      )
+      .run(id, i.eventSeq, i.kind, i.needsHuman ? 1 : 0, i.agentId, i.taskId, i.summary, i.detail, createdAt);
+    return res.changes ? { id, ...i, createdAt, archivedAt: null } : undefined;
+  }
+
+  /** Items not yet handed to the human, oldest first. */
+  listAfkItems(): AfkItem[] {
+    return this.db.prepare('SELECT * FROM afk_item WHERE archived_at IS NULL ORDER BY event_seq').all().map(toAfkItem);
+  }
+
+  archiveAfkItems(at = Date.now()): number {
+    return Number(this.db.prepare('UPDATE afk_item SET archived_at = ? WHERE archived_at IS NULL').run(at).changes);
   }
 }

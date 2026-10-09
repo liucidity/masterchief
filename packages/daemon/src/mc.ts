@@ -12,6 +12,7 @@ import { loadRoleConfig, readRules, resolveRoleSetting, rolesFile, rulesFile, ST
 import { git } from './git.js';
 import { getHarness, listHarnesses, type Harness } from './harness.js';
 import type { SessionBackend } from './session-backend.js';
+import { Afk } from './afk.js';
 import { Cortana } from './cortana.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
 import { agentEnv } from './workspace.js';
@@ -102,7 +103,12 @@ export class Mc {
 
   /** Only one watcher may run at a time. Returns a function that releases the lock. */
   async acquireWatchLock(): Promise<() => Promise<void>> {
-    const file = join(this.d.home, 'watch.pid');
+    return this.acquireLock('watch.pid', 'a watcher');
+  }
+
+  /** Take a single-instance lock file in the home. Replaces the lock of a dead process. */
+  async acquireLock(name: string, what: string): Promise<() => Promise<void>> {
+    const file = join(this.d.home, name);
     await mkdir(this.d.home, { recursive: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -120,12 +126,18 @@ export class Mc {
             alive = false;
           }
         }
-        if (alive) throw new McError(`a watcher is already running (pid ${pid})`);
+        if (alive) throw new McError(`${what} is already running (pid ${pid})`);
         await rm(file, { force: true });
       }
     }
-    throw new McError('could not take the watcher lock');
+    throw new McError(`could not take the ${name} lock`);
   }
+
+  /** Optional away mode. */
+  get afk(): Afk {
+    return (this._afk ??= new Afk(this));
+  }
+  private _afk?: Afk;
 
   /** Second mates: persistent sub-supervisors with their own homes. */
   get cortana(): Cortana {
@@ -252,7 +264,11 @@ export class Mc {
   }
 
   async watchStatus(): Promise<{ running: boolean; pid?: number }> {
-    const pid = Number(await readFile(join(this.d.home, 'watch.pid'), 'utf8').catch(() => ''));
+    return this.lockStatus('watch.pid');
+  }
+
+  async lockStatus(name: string): Promise<{ running: boolean; pid?: number }> {
+    const pid = Number(await readFile(join(this.d.home, name), 'utf8').catch(() => ''));
     if (pid > 0) {
       try {
         process.kill(pid, 0);
