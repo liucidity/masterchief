@@ -32,6 +32,8 @@ export interface McDeps {
   harnessIds?: () => string[];
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
+  /** Epoch seconds. Injectable for tests. */
+  now?: () => number;
   /** Default for the CLI trust store: leave it alone (false), use another config file, or the real one (unset). */
   trust?: false | { configFile?: string };
   /** Opens another MasterChief home, for a second mate. The session names the tmux session its windows go in. */
@@ -557,14 +559,38 @@ export class Mc {
 
   // ---- status / send / teardown / events -------------------------------------
 
-  /** Live agents with a task, in every mission. */
+  /** What, if anything, needs the Commander's attention about an agent, judged from its current state. */
+  private attention(agent: Agent, task: Task, verdict: BusyVerdict): string | null {
+    switch (verdict.state) {
+      case 'dead':
+        return 'exited: read its screen, then respawn the task or tell the captain';
+      case 'waiting':
+        return 'waiting for input: tell the captain what it is asking; do not answer it';
+      case 'unknown':
+        return `no signal (${verdict.source}): it may be at a dialog, so read its screen`;
+      case 'busy': {
+        const quiet = verdict.since !== undefined ? Math.floor(((this.d.now?.() ?? Date.now() / 1000) - verdict.since) / 60) : 0;
+        return quiet >= 30 ? `busy for ${quiet} minutes with no progress: read its screen` : null;
+      }
+      case 'idle': {
+        if (task.kind === 'sentinel') return 'finished: read its report, record findings, then tear it down';
+        const review = this.store.latestReview(task.id)?.verdict;
+        if (review === 'approve') return 'approved: land it with mc land, or send changes';
+        if (review === 'reject') return 'rejected earlier and now idle: check whether the corrections arrived, or tear it down';
+        return 'finished: review its diff, then mc review';
+      }
+    }
+  }
+
+  /** Live agents with a task, in every mission, each with an `attention` note when something is needed. */
   async fleet() {
     const rows = [];
     for (const m of this.store.listMissions()) {
       for (const task of this.store.listTasks(m.id)) {
         const agent = task.agentId ? this.store.getAgent(task.agentId) : undefined;
         if (!agent || agent.state === 'retired') continue;
-        rows.push({ mission: m.id, task: task.id, title: task.title, kind: task.kind, status: task.status, agent: agent.id, harness: agent.harness, verdict: await this.verdict(agent) });
+        const verdict = await this.verdict(agent);
+        rows.push({ mission: m.id, task: task.id, title: task.title, kind: task.kind, status: task.status, agent: agent.id, harness: agent.harness, verdict, attention: this.attention(agent, task, verdict) });
       }
     }
     return rows;
@@ -800,14 +826,21 @@ export class Mc {
     return this.store.getMission(mission.id)!;
   }
 
-  /** New events since the last read. Reading advances the cursor unless `peek` is set. */
-  events(o: { after?: number; peek?: boolean; mission?: string } = {}) {
-    const cursor = o.after ?? Number(this.store.getSetting('events_cursor') ?? 0);
-    const events = this.store.listEvents({ afterSeq: cursor, missionId: o.mission ? this.findMission(o.mission).id : undefined });
-    if (!o.peek && o.after === undefined && events.length) {
-      this.store.setSetting('events_cursor', String(events[events.length - 1]!.seq));
+  /**
+   * Events the Commander has not acknowledged. Reading never moves the cursor, so a Commander that
+   * crashes mid-way is shown the same events again. `ack` commits everything up to a position.
+   */
+  events(o: { after?: number; ack?: number; mission?: string } = {}) {
+    const latest = this.store.listEvents().at(-1)?.seq ?? 0;
+    let cursor = Number(this.store.getSetting('events_cursor') ?? 0);
+    if (o.ack !== undefined) {
+      if (!Number.isInteger(o.ack) || o.ack < 0 || o.ack > latest) throw new McError(`cannot acknowledge ${o.ack}: the latest event is ${latest}`);
+      cursor = Math.max(cursor, o.ack);
+      this.store.setSetting('events_cursor', String(cursor));
     }
-    return events;
+    const events = this.store.listEvents({ afterSeq: o.after ?? cursor, missionId: o.mission ? this.findMission(o.mission).id : undefined });
+    const next = events.at(-1)?.seq ?? null;
+    return { acknowledged: cursor, events, next, ack: next === null ? null : `mc events --ack ${next}` };
   }
 
   async readBrief(arg: string): Promise<string> {

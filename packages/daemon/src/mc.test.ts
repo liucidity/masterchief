@@ -186,14 +186,57 @@ test('the agent temp dir does not make a clean worktree look dirty', async () =>
   await mc.teardown(r.agentId);
 });
 
-test('events advance a cursor unless peeked or given an explicit position', async () => {
+test('events stay put until acknowledged, so a Commander that crashed sees them again', async () => {
   const { mission } = await setup();
   await spawn(mission.id);
-  expect(mc.events({ peek: true })).toHaveLength(1);
-  expect(mc.events()).toHaveLength(1);
-  expect(mc.events()).toHaveLength(0);
-  expect(mc.events({ after: 0 })).toHaveLength(1);
+  const first = mc.events();
+  expect(first.events.map((e) => e.kind)).toEqual(['spawned']);
+  expect(first.ack).toBe(`mc events --ack ${first.next}`);
+  expect(mc.events().events).toHaveLength(1);
+  expect(mc.events({ after: 0 }).events).toHaveLength(1);
+
+  expect(mc.events({ ack: first.next! })).toMatchObject({ events: [], acknowledged: first.next, next: null, ack: null });
+  expect(mc.events().events).toEqual([]);
+  store.addEvent({ missionId: mission.id, agentId: 'x', kind: 'finished', payload: {} });
+  const second = mc.events();
+  expect(second.events.map((e) => e.kind)).toEqual(['finished']);
+  expect(mc.events({ ack: 1 }).acknowledged).toBe(first.next); // an older ack never moves the cursor back
+  expect(() => mc.events({ ack: 99 })).toThrow(/cannot acknowledge 99: the latest event is 2/);
+  expect(() => mc.events({ ack: -1 })).toThrow(/cannot acknowledge/);
+  mc.events({ ack: second.next! });
+  expect(mc.events().events).toEqual([]);
 });
+
+test('status says what needs attention from the current state alone', async () => {
+  const { mission } = await setup();
+  const done = await spawn(mission.id, { brief: 'first' });
+  const waiting = await spawn(mission.id, { brief: 'start' });
+  const dead = await spawn(mission.id, { brief: 'start' });
+  const sentinel = await mc.spawn({ missionId: mission.id, kind: 'sentinel', title: 's', harness: 'fake', brief: 'probe', trust: false });
+  const busy = await spawn(mission.id, { brief: 'start' });
+  await Promise.all([done, waiting, dead, sentinel, busy].map((r) => waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle')));
+  await mc.send(waiting.agentId, { text: 'ask me' });
+  await mc.send(busy.agentId, { text: 'hang' });
+  await mc.send(dead.agentId, { interrupt: true });
+  await waitFor(async () => (await mc.status(waiting.agentId)).verdict.state === 'waiting');
+  await waitFor(async () => (await mc.status(dead.agentId)).verdict.state === 'dead');
+  await waitFor(async () => (await mc.status(busy.agentId)).verdict.state === 'busy');
+
+  const rows = Object.fromEntries((await mc.status()).map((r) => [r.agent, r.attention]));
+  expect(rows[done.agentId]).toMatch(/^finished: review its diff/);
+  expect(rows[waiting.agentId]).toMatch(/^waiting for input/);
+  expect(rows[dead.agentId]).toMatch(/^exited/);
+  expect(rows[sentinel.agentId]).toMatch(/^finished: read its report/);
+  expect(rows[busy.agentId]).toBeNull();
+
+  mc.review(done.agentId, { verdict: 'reject', notes: 'nope' });
+  expect((await mc.status()).find((r) => r.agent === done.agentId)!.attention).toMatch(/^rejected earlier/);
+  mc.review(done.agentId, { verdict: 'approve', notes: 'ok' });
+  expect((await mc.status()).find((r) => r.agent === done.agentId)!.attention).toMatch(/^approved: land it/);
+
+  const later = new Mc({ store, tmux, worktrees: freshWorktrees, home, now: () => Date.now() / 1000 + 45 * 60, harnessFor: () => fakeHarness });
+  expect((await later.status()).find((r) => r.agent === busy.agentId)!.attention).toMatch(/^busy for 4\d minutes/);
+}, 30_000);
 
 test('with a guard path, crew members launch with a guard command scoped to their role and worktree', async () => {
   const seen: Array<string[] | undefined> = [];

@@ -18,13 +18,13 @@ const HELP = `mc - control the MasterChief crew
   mc mission list | mc mission show <id> | mc mission finish <id> [--abort]
   mc spawn --mission <id> --kind ship|sentinel --title <text> [--harness <name>] [--tier small]
            [--model <m>] [--effort <e>] [--brief <text|@file>] [--permission-mode <m>]
-  mc status [<task|agent>] [--lines <n>]
+  mc status [<task|agent>] [--lines <n>] [--attention]
   mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter] [--force]
   mc finding add --mission <id> --claim <t> --evidence <t> --confidence <0-1> | mc finding list --mission <id>
   mc review <task|agent> --verdict approve|reject|escalate --notes <why>
   mc land <task|agent> [--title <t>] [--body <b>]
   mc teardown <task|agent> [--force] [--outcome done|failed]
-  mc events [--after <seq>] [--peek] [--mission <id>]
+  mc events [--ack <seq>] [--after <seq>] [--mission <id>]
   mc watch [--interval <ms>] [--once] [--unknown-after <s>] [--stale-after <s>]
   mc watch --status | --background | --stop
   mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
@@ -121,8 +121,10 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       }
 
       case 'status': {
-        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { lines: { type: 'string' } } });
-        print(await mc.status(positionals[0], { lines: values.lines ? Number(values.lines) : undefined }));
+        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { lines: { type: 'string' }, attention: { type: 'boolean' } } });
+        if (positionals[0]) return (print(await mc.status(positionals[0], { lines: values.lines ? Number(values.lines) : undefined })), 0);
+        const fleet = await mc.status();
+        print(values.attention ? fleet.filter((r) => r.attention) : fleet);
         return 0;
       }
 
@@ -167,8 +169,8 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       }
 
       case 'events': {
-        const { values } = parseArgs({ args: rest, options: { after: { type: 'string' }, peek: { type: 'boolean' }, mission: { type: 'string' } } });
-        print(mc.events({ after: values.after !== undefined ? Number(values.after) : undefined, peek: values.peek, mission: values.mission }));
+        const { values } = parseArgs({ args: rest, options: { after: { type: 'string' }, ack: { type: 'string' }, mission: { type: 'string' } } });
+        print(mc.events({ after: values.after !== undefined ? Number(values.after) : undefined, ack: values.ack !== undefined ? Number(values.ack) : undefined, mission: values.mission }));
         return 0;
       }
 

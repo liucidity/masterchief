@@ -199,6 +199,7 @@ export class Afk {
     this.store.setAfkActive(false);
     // Everything up to now is covered by the brief, so the normal wake must not replay it.
     this.store.setSetting('wake_cursor', String(this.latestSeq()));
+    this.store.setSetting('events_cursor', String(this.latestSeq()));
     const commander = this.store.listAgents().find((a) => a.role === 'commander' && a.state !== 'retired' && a.endpoint);
     let pointerSent = false;
     if (commander && items.length && (await this.mc.verdict(commander)).state === 'idle') {

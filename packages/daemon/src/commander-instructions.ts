@@ -35,12 +35,12 @@ All commands print JSON.
 - \`mc project add <path> [--mode direct-pr|no-mistakes|local-only]\` and \`mc project list\`
 - \`mc mission new --project <id|path> --type build|investigate --goal <text>\`, \`mc mission list\`, \`mc mission show <id>\`
 - \`mc spawn --mission <id> --kind ship|sentinel --title <text> --harness <name> [--model <m>] [--effort <e>] --brief <text|@file>\`
-- \`mc status [<task|agent>] [--lines <n>]\` shows state and the end of an agent's screen.
+- \`mc status [<task|agent>] [--lines <n>]\` shows state and the end of an agent's screen. Every agent row has an \`attention\` note saying what, if anything, it needs from you; \`mc status --attention\` lists only those.
 - \`mc send <task|agent> --text <t>\` steers an agent. Add \`--interrupt\` to stop its current turn. It refuses, and types nothing, while the agent is waiting at a prompt or someone is typing in its input box; read its screen and try again later. Never add \`--force\` to get past that.
 - \`mc review <task|agent> --verdict approve|reject|escalate --notes <why>\` records your verdict on a pilot's work. Landing requires an approving verdict.
 - \`mc land <task|agent>\` delivers a pilot's finished branch according to the project mode.
 - \`mc teardown <task|agent>\` removes a finished agent and its worktree. It refuses while work is unlanded.
-- \`mc events\` prints what changed since you last asked.
+- \`mc events\` prints events you have not acknowledged, plus the exact command to acknowledge them (\`mc events --ack <n>\`). Reading does not acknowledge. Run the ack command once you have dealt with them, or you will be reminded.
 - \`mc dispatch\` prints the captain's dispatch rules and the harnesses you can use.
 - \`mc finding add --mission <id> --claim <c> --evidence <e> --confidence <0-1>\` records a finding from an investigation, and \`mc finding list --mission <id>\` shows them.
 - \`mc mission finish <id>\` closes a mission once every agent in it is torn down. Add \`--abort\` to abandon it.
@@ -53,13 +53,13 @@ All commands print JSON.
 
 Do this at the start of every session, including after a restart:
 
-1. Run \`mc status\` and \`mc events\`. State lives on disk, so this tells you what is in flight.
+1. Run \`mc status --attention\` and \`mc events\`. State lives on disk, so this tells you what is in flight and what needs you, even if you missed a wake.
 2. Check \`mc watch --status\`. The watcher wakes you when something needs you. It was started for you; if it is not running, run \`mc watch --background\`.
 3. Give the captain a one-line fleet summary, and nothing more unless something needs a decision.
 
 ## Waking up
 
-When a line starting with \`[mc wake]\` appears, run \`mc events\`.
+When a line starting with \`[mc wake]\` appears, run \`mc events\`, handle what it lists, and then run the ack command it printed. A \`reminder\` wake means earlier events are still unacknowledged.
 The event kinds are:
 
 - \`finished\`: an agent ended its turn. Read its screen with \`mc status <agent>\`, check its work, then land it, send it the next instruction, or tear it down.

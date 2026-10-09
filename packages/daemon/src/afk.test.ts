@@ -146,6 +146,7 @@ test('while away the Commander is not nudged; on return it gets one pointer and 
 
   const brief = await mc.afk.stop();
   expect(brief.activity.map((a) => a.kind)).toEqual(['ready']);
+  expect(mc.events().events).toEqual([]); // the brief covers everything up to now, so nothing is left to remind about
   expect(brief.text).toContain('Away for');
   expect(brief.text).toContain('meeting');
   expect(brief.text).toContain('Nothing needs a decision.');
