@@ -1,0 +1,88 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, expect, test } from 'vitest';
+import { classifyAgent, lastHookEvent } from './busy.js';
+import { claudeHarness, registerClaudeTrust } from './claude.js';
+import { getHarness, listHarnesses } from './harness.js';
+
+let dir: string;
+beforeEach(async () => {
+  dir = await mkdtemp(join(tmpdir(), 'mc-claude-'));
+});
+afterEach(() => rm(dir, { recursive: true, force: true }));
+
+const prep = (extra = {}) =>
+  claudeHarness.prepare({ agentId: 'pilot-1', role: 'pilot', cwd: join(dir, 'wt'), stateDir: join(dir, 'state'), trust: false, ...extra });
+
+test('claude is registered and validates model and effort', () => {
+  expect(listHarnesses()).toContain('claude');
+  expect(getHarness('claude')).toBe(claudeHarness);
+  expect(() => getHarness('nope')).toThrow(/unknown harness/);
+  expect(claudeHarness.validate('opus', 'high')).toBeNull();
+  expect(claudeHarness.validate('claude-opus-5-5', null)).toBeNull();
+  expect(claudeHarness.validate('--bad', null)).toMatch(/invalid model/);
+  expect(claudeHarness.validate(null, 'extreme')).toMatch(/invalid effort/);
+});
+
+test('prepare builds the command, env and a settings file with all four hooks', async () => {
+  const l = await prep({ model: 'opus', effort: 'high', appendSystemPrompt: 'be brief' });
+  expect(l.command.slice(0, 1)).toEqual(['claude']);
+  expect(l.command).toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high', '--permission-mode', 'bypassPermissions', '--append-system-prompt', 'be brief']));
+  expect(l.env).toMatchObject({ MC_AGENT_ID: 'pilot-1', MC_ROLE: 'pilot' });
+  const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
+  expect(Object.keys(settings.hooks).sort()).toEqual(['SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
+  expect((await prep()).gen).not.toBe(l.gen);
+});
+
+test('prepare rejects paths that could break out of the hook command and invalid options', async () => {
+  await expect(prep({ cwd: `${dir}/it's` })).rejects.toThrow(/unsafe path/);
+  await expect(prep({ effort: 'extreme' })).rejects.toThrow(/invalid effort/);
+});
+
+test('trust registration merges into an existing config and creates a missing one', async () => {
+  const file = join(dir, '.claude.json');
+  await registerClaudeTrust(['/a'], file);
+  await writeFile(file, JSON.stringify({ theme: 'dark', projects: { '/old': { x: 1 } } }));
+  await registerClaudeTrust(['/a', '/b'], file);
+  const c = JSON.parse(await readFile(file, 'utf8'));
+  expect(c.theme).toBe('dark');
+  expect(c.projects['/old']).toEqual({ x: 1 });
+  expect(c.projects['/a'].hasTrustDialogAccepted).toBe(true);
+  expect(c.projects['/b'].hasTrustDialogAccepted).toBe(true);
+});
+
+test('the generated hook commands write lines that classify busy, idle and dead', async () => {
+  const l = await prep();
+  const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
+  const fire = (hook: string) => execFileSync('sh', ['-c', settings.hooks[hook][0].hooks[0].command]);
+  const verdict = () => classifyAgent({ harness: claudeHarness, endpoint: 'alive', hookLog: l.hookLog, gen: l.gen });
+
+  expect((await verdict())).toMatchObject({ state: 'unknown', source: 'no-events-yet' });
+  fire('UserPromptSubmit');
+  expect(await verdict()).toMatchObject({ state: 'busy', source: 'hooks', event: 'prompt' });
+  fire('Stop');
+  expect(await verdict()).toMatchObject({ state: 'idle', event: 'stop' });
+  fire('UserPromptSubmit');
+  fire('StopFailure');
+  expect(await verdict()).toMatchObject({ state: 'idle', event: 'stop-failure' });
+  fire('SessionEnd');
+  expect(await verdict()).toMatchObject({ state: 'dead', event: 'session-end' });
+});
+
+test('classification: a gone process wins, other incarnations are ignored, and gaps are unknown', async () => {
+  const l = await prep();
+  const log = l.hookLog!;
+  await writeFile(log, `other-gen 100 prompt\n${l.gen} 101 stop\n${l.gen} bad stop\ngarbage\n${l.gen} 102 mystery\n`);
+  expect(await lastHookEvent(log, l.gen)).toEqual({ event: 'stop', ts: 101 });
+  expect(await lastHookEvent(log, 'someone-else')).toBeUndefined();
+
+  const base = { harness: claudeHarness, hookLog: log, gen: l.gen };
+  expect(await classifyAgent({ ...base, endpoint: 'missing' })).toMatchObject({ state: 'dead', source: 'endpoint-missing' });
+  expect(await classifyAgent({ ...base, endpoint: 'dead' })).toMatchObject({ state: 'dead', source: 'endpoint-exited' });
+  expect(await classifyAgent({ ...base, endpoint: 'alive', gen: 'new-incarnation' })).toMatchObject({ state: 'unknown' });
+  expect(await classifyAgent({ ...base, endpoint: 'alive', hookLog: join(dir, 'nope.log') })).toMatchObject({ state: 'unknown' });
+  expect(await classifyAgent({ harness: claudeHarness, endpoint: 'alive', hookLog: null, gen: null })).toMatchObject({ state: 'unknown', source: 'no-hook-record' });
+  expect(await classifyAgent({ harness: { ...claudeHarness, semanticBusy: false }, endpoint: 'alive', hookLog: log, gen: l.gen })).toMatchObject({ state: 'unknown', source: 'no-semantic-source' });
+});
