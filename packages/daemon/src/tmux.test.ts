@@ -100,3 +100,19 @@ test('destroy waits for a slow-to-exit program, so its last writes happen before
   expect(await tmux.status(ep)).toBe('missing');
   await tmux.destroy(ep); // a missing window is fine
 });
+
+test('a tmux command that fails for another reason is an error, not a missing window', async () => {
+  const ep = await tmux.create({ name: 'live', cwd: dir, command: ['sleep', '30'] });
+  const path = process.env.PATH;
+  process.env.PATH = '';
+  try {
+    await expect(tmux.status(ep)).rejects.toThrow();
+  } finally {
+    process.env.PATH = path;
+  }
+  expect(await tmux.status(ep)).toBe('alive');
+});
+
+test('a server that is not running reads as missing', async () => {
+  expect(await tmux.status('@1')).toBe('missing');
+});

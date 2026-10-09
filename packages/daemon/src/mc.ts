@@ -11,7 +11,7 @@ import { commanderInstructions } from './commander-instructions.js';
 import { loadRoleConfig, readRules, resolveRoleSetting, rolesFile, rulesFile, STARTER_RULES, type ConfigKey } from './dispatch.js';
 import { git } from './git.js';
 import { getHarness, listHarnesses, type Harness } from './harness.js';
-import type { SessionBackend } from './session-backend.js';
+import type { EndpointStatus, SessionBackend } from './session-backend.js';
 import { Afk } from './afk.js';
 import { Cortana } from './cortana.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
@@ -553,7 +553,15 @@ export class Mc {
   }
 
   async verdict(agent: Agent): Promise<BusyVerdict> {
-    const endpoint = agent.endpoint ? await this.d.tmux.status(agent.endpoint) : 'missing';
+    let endpoint: EndpointStatus = 'missing';
+    if (agent.endpoint) {
+      try {
+        endpoint = await this.d.tmux.status(agent.endpoint);
+      } catch {
+        // The terminal layer could not answer, which says nothing about the agent.
+        return { state: 'unknown', source: 'endpoint-unreadable' };
+      }
+    }
     return classifyAgent({ harness: this.harness(agent.harness), endpoint, hookLog: agent.hookLog, gen: agent.gen });
   }
 

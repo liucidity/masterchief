@@ -25,7 +25,7 @@ export interface SessionBackend {
   sendKeys(endpoint: string, ...keys: string[]): Promise<void>;
   /** The last `lines` lines of the visible screen and scrollback. */
   capture(endpoint: string, lines?: number): Promise<string>;
-  /** Dead means the window exists but its process has exited; missing means no window. */
+  /** Dead means the window exists but its process has exited; missing means no window. Throws when the backend cannot tell. */
   status(endpoint: string): Promise<EndpointStatus>;
   /** Close the window and wait for its program to exit. Safe to call on a missing endpoint. */
   destroy(endpoint: string): Promise<void>;

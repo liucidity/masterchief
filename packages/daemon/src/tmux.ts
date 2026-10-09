@@ -84,8 +84,10 @@ export class TmuxBackend implements SessionBackend {
       const row = out.split('\n').find((l) => l.split('\t')[0] === endpoint);
       if (!row) return 'missing';
       return row.split('\t')[1] === '1' ? 'dead' : 'alive';
-    } catch {
-      return 'missing';
+    } catch (err) {
+      // Only "there is no server or session" means there is no window. Any other failure says nothing about it.
+      if (/no server running|error connecting|server exited unexpectedly|no current target|can't find session|no sessions/i.test(String((err as Error).message))) return 'missing';
+      throw err;
     }
   }
 
