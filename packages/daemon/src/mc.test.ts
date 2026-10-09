@@ -102,6 +102,21 @@ test('spawn starts a pilot in its own worktree, delivers the brief and reports i
   expect(await mc.status()).toMatchObject([{ agent: r.agentId, verdict: { state: 'idle' } }]);
 });
 
+test('a terminal layer that cannot answer makes an agent unknown, not dead', async () => {
+  const { mission } = await setup();
+  const r = await spawn(mission.id);
+  const agent = store.getAgent(r.agentId)!;
+  const status = tmux.status.bind(tmux);
+  tmux.status = async () => {
+    throw new Error('tmux timed out');
+  };
+  try {
+    expect(await mc.verdict(agent)).toEqual({ state: 'unknown', source: 'endpoint-unreadable' });
+  } finally {
+    tmux.status = status;
+  }
+});
+
 test('sentinels get a read-only checkout and a report directory', async () => {
   const { mission } = await setup('investigate');
   const r = await mc.spawn({ missionId: mission.id, kind: 'sentinel', title: 'probe', harness: 'fake', trust: false });
