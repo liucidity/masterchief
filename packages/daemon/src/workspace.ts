@@ -25,12 +25,16 @@ export const worktreePath = (repoPath: string, agentId: string) =>
 export const branchName = (missionId: string, agentId: string) =>
   `mc/${safe(missionId)}/${safe(agentId)}`;
 
+const EXCLUDED = ['.mc/', '.mc-tmp/'];
+
 async function excludeMcDir(repoPath: string): Promise<void> {
   const file = join(await git(repoPath, 'rev-parse', '--absolute-git-dir'), 'info', 'exclude');
   const current = await readFile(file, 'utf8').catch(() => '');
-  if (!current.split('\n').includes('.mc/')) {
+  const lines = current.split('\n');
+  const missing = EXCLUDED.filter((e) => !lines.includes(e));
+  if (missing.length) {
     await mkdir(join(file, '..'), { recursive: true });
-    await appendFile(file, `${current.endsWith('\n') || !current ? '' : '\n'}.mc/\n`);
+    await appendFile(file, `${current.endsWith('\n') || !current ? '' : '\n'}${missing.join('\n')}\n`);
   }
 }
 

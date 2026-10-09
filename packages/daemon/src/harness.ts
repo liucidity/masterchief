@@ -13,6 +13,8 @@ export interface HarnessPrepareOptions {
   permissionMode?: string;
   /** Standing instructions added to the CLI's system prompt. */
   appendSystemPrompt?: string;
+  /** The first message the agent receives, delivered at launch so no ready-detection is needed. */
+  initialPrompt?: string;
   /** Pre-register the worktree with the CLI's trust store. Pass false to leave the user's config alone. */
   trust?: false | { configFile?: string };
 }

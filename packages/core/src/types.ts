@@ -56,6 +56,11 @@ export interface Agent {
   workspaceId: string | null;
   state: AgentState;
   permanent: boolean;
+  /** Incarnation token of the current launch; hook events from other launches are ignored. */
+  gen: string | null;
+  hookLog: string | null;
+  /** Port/temp-dir slot while the agent is live. */
+  slot: number | null;
 }
 
 export interface Workspace {

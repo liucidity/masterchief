@@ -93,6 +93,7 @@ export const claudeHarness: Harness = {
     if (opts.model) command.push('--model', opts.model);
     if (opts.effort) command.push('--effort', opts.effort);
     if (opts.appendSystemPrompt) command.push('--append-system-prompt', opts.appendSystemPrompt);
+    if (opts.initialPrompt) command.push('--', opts.initialPrompt);
     return {
       command,
       env: {

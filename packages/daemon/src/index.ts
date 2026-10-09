@@ -5,3 +5,5 @@ export * from './tmux.js';
 export * from './busy.js';
 export * from './claude.js';
 export * from './harness.js';
+export * from './mc.js';
+export * from './cli.js';

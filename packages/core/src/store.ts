@@ -58,6 +58,9 @@ const toAgent = (r: Row): Agent => ({
   workspaceId: r.workspace_id as string | null,
   state: r.state as AgentState,
   permanent: r.permanent === 1,
+  gen: r.gen as string | null,
+  hookLog: r.hook_log as string | null,
+  slot: r.slot as number | null,
 });
 
 const toWorkspace = (r: Row): Workspace => ({
@@ -202,6 +205,7 @@ export class Store {
   }
 
   createAgent(a: {
+    id?: string;
     role: Agent['role'];
     harness: string;
     model?: string | null;
@@ -209,8 +213,11 @@ export class Store {
     permanent?: boolean;
     workspaceId?: string | null;
     endpoint?: string | null;
+    gen?: string | null;
+    hookLog?: string | null;
+    slot?: number | null;
   }): Agent {
-    const id = randomUUID();
+    const id = a.id ?? randomUUID();
     const agent: Agent = {
       id,
       role: a.role,
@@ -221,12 +228,15 @@ export class Store {
       workspaceId: a.workspaceId ?? null,
       state: 'starting',
       permanent: a.permanent ?? (a.role === 'commander' || a.role === 'cortana'),
+      gen: a.gen ?? null,
+      hookLog: a.hookLog ?? null,
+      slot: a.slot ?? null,
     };
     this.db
       .prepare(
-        'INSERT INTO agent (id, role, workspace_id, state, permanent, harness, model, effort, endpoint) VALUES (?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO agent (id, role, workspace_id, state, permanent, harness, model, effort, endpoint, gen, hook_log, slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       )
-      .run(id, agent.role, agent.workspaceId, agent.state, agent.permanent ? 1 : 0, agent.harness, agent.model, agent.effort, agent.endpoint);
+      .run(id, agent.role, agent.workspaceId, agent.state, agent.permanent ? 1 : 0, agent.harness, agent.model, agent.effort, agent.endpoint, agent.gen, agent.hookLog, agent.slot);
     return agent;
   }
 
@@ -241,16 +251,34 @@ export class Store {
 
   updateAgent(
     id: string,
-    patch: { state?: AgentState; endpoint?: string | null; workspaceId?: string | null },
+    patch: {
+      state?: AgentState;
+      endpoint?: string | null;
+      workspaceId?: string | null;
+      gen?: string | null;
+      hookLog?: string | null;
+      slot?: number | null;
+    },
   ): void {
     if (!this.getAgent(id)) throw new Error(`agent not found: ${id}`);
     const sets: string[] = [];
-    const vals: (string | null)[] = [];
+    const vals: (string | number | null)[] = [];
     if (patch.state !== undefined) (sets.push('state = ?'), vals.push(patch.state));
     if (patch.endpoint !== undefined) (sets.push('endpoint = ?'), vals.push(patch.endpoint));
     if (patch.workspaceId !== undefined) (sets.push('workspace_id = ?'), vals.push(patch.workspaceId));
+    if (patch.gen !== undefined) (sets.push('gen = ?'), vals.push(patch.gen));
+    if (patch.hookLog !== undefined) (sets.push('hook_log = ?'), vals.push(patch.hookLog));
+    if (patch.slot !== undefined) (sets.push('slot = ?'), vals.push(patch.slot));
     if (!sets.length) return;
     this.db.prepare(`UPDATE agent SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id);
+  }
+
+  /** Smallest slot not held by an agent, for per-agent ports and temp dirs. A slot is held until teardown. */
+  allocateSlot(): number {
+    const used = new Set(this.listAgents().flatMap((a) => (a.slot === null ? [] : [a.slot])));
+    let n = 0;
+    while (used.has(n)) n++;
+    return n;
   }
 
   deleteAgent(id: string): void {

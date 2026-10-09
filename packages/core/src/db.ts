@@ -53,11 +53,18 @@ const MIGRATIONS = [
    CREATE TABLE cortana_home (
      id TEXT PRIMARY KEY, scope TEXT NOT NULL, projects TEXT NOT NULL DEFAULT '[]',
      home_path TEXT NOT NULL, route TEXT NOT NULL CHECK (route IN ('local')), harness TEXT);`,
+  `ALTER TABLE agent ADD COLUMN gen TEXT;
+   ALTER TABLE agent ADD COLUMN hook_log TEXT;
+   ALTER TABLE agent ADD COLUMN slot INTEGER;`,
+  `CREATE UNIQUE INDEX agent_slot_unique ON agent(slot) WHERE slot IS NOT NULL;`,
 ];
 
 export function openDb(path = ':memory:'): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON');
+  // Several mc processes and the watcher share this file.
+  db.exec('PRAGMA busy_timeout = 5000');
+  db.exec('PRAGMA journal_mode = WAL');
   const row = db.prepare('PRAGMA user_version').get() as { user_version: number };
   for (let v = row.user_version; v < MIGRATIONS.length; v++) {
     db.exec('BEGIN');

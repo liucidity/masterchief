@@ -146,3 +146,18 @@ test('migration 2 upgrades a database created by migration 1', async () => {
   expect(upgraded.getAgent('a1')).toMatchObject({ role: 'pilot', state: 'busy', harness: 'claude' });
   expect(upgraded.getAgent('a2')).toMatchObject({ role: 'sentinel', state: 'dead' });
 });
+
+test('agents remember their launch details and slots are reused after retirement', () => {
+  const a = store.createAgent({ id: 'pilot-aa', role: 'pilot', harness: 'claude', slot: store.allocateSlot() });
+  expect(a).toMatchObject({ id: 'pilot-aa', slot: 0, gen: null });
+  const b = store.createAgent({ id: 'pilot-bb', role: 'pilot', harness: 'claude', slot: store.allocateSlot() });
+  expect(b.slot).toBe(1);
+  store.updateAgent(a.id, { gen: 'g1', hookLog: '/x.log', state: 'retired', slot: null });
+  expect(store.getAgent(a.id)).toMatchObject({ gen: 'g1', hookLog: '/x.log' });
+  expect(store.allocateSlot()).toBe(0);
+  store.updateAgent(b.id, { state: 'dead' });
+  expect(store.allocateSlot()).toBe(0);
+  expect(() => store.createAgent({ role: 'pilot', harness: 'claude', slot: 1 })).toThrow();
+  store.updateAgent(b.id, { slot: null });
+  expect(store.allocateSlot()).toBe(0);
+});
