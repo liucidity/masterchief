@@ -7,14 +7,12 @@ export type MissionStatus =
   | 'done'
   | 'aborted';
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
-export type AgentRole =
-  | 'commander'
-  | 'cortana'
-  | 'engineer'
-  | 'tester'
-  | 'investigator'
-  | 'reviewer';
-export type AgentState = 'idle' | 'working' | 'waiting' | 'done' | 'failed';
+export type TaskKind = 'ship' | 'sentinel';
+export type DeliveryMode = 'no-mistakes' | 'direct-pr' | 'local-only';
+export type AgentRole = 'commander' | 'pilot' | 'sentinel' | 'cortana';
+/** Semantic state of a terminal agent. Unknown is never promoted to idle or busy. */
+export type AgentState = 'starting' | 'busy' | 'idle' | 'unknown' | 'dead' | 'retired';
+export type CortanaRoute = 'local';
 export type WorkspaceAccess = 'rw' | 'ro';
 export type Verdict = 'approve' | 'reject' | 'escalate';
 
@@ -23,6 +21,7 @@ export interface Project {
   path: string;
   defaultBranch: string;
   repoUrl: string | null;
+  deliveryMode: DeliveryMode;
 }
 
 export interface Mission {
@@ -39,6 +38,8 @@ export interface Task {
   id: string;
   missionId: string;
   title: string;
+  kind: TaskKind;
+  deliveryMode: DeliveryMode;
   agentId: string | null;
   status: TaskStatus;
   dependsOn: string[];
@@ -47,7 +48,11 @@ export interface Task {
 export interface Agent {
   id: string;
   role: AgentRole;
-  sessionId: string | null;
+  harness: string;
+  model: string | null;
+  effort: string | null;
+  /** Terminal window the agent runs in; null until launched. */
+  endpoint: string | null;
   workspaceId: string | null;
   state: AgentState;
   permanent: boolean;
@@ -64,7 +69,7 @@ export interface Workspace {
 export interface Review {
   id: string;
   missionId: string;
-  by: 'cortana' | 'reviewer';
+  by: 'cortana' | 'commander';
   verdict: Verdict;
   notes: string;
 }
@@ -79,9 +84,19 @@ export interface Finding {
 
 export interface Event {
   id: string;
-  missionId: string;
+  missionId: string | null;
   agentId: string | null;
   kind: string;
   payload: unknown;
   ts: number;
+}
+
+/** A persistent second mate (Cortana) with its own scope, projects and home. */
+export interface CortanaHome {
+  id: string;
+  scope: string;
+  projects: string[];
+  homePath: string;
+  route: CortanaRoute;
+  harness: string | null;
 }
