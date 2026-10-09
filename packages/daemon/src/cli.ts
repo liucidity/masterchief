@@ -16,7 +16,7 @@ const HELP = `mc - control the MasterChief crew
   mc project list
   mc mission new --project <id|path> --type build|investigate --goal <text>
   mc mission list | mc mission show <id>
-  mc spawn --mission <id> --kind ship|sentinel --title <text> --harness <name>
+  mc spawn --mission <id> --kind ship|sentinel --title <text> [--harness <name>] [--tier small]
            [--model <m>] [--effort <e>] [--brief <text|@file>] [--permission-mode <m>]
   mc status [<task|agent>] [--lines <n>]
   mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter]
@@ -27,6 +27,7 @@ const HELP = `mc - control the MasterChief crew
   mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
   mc commander stop | mc commander status
   mc attach
+  mc dispatch [--init]
   mc harnesses
 
 Every command prints JSON. Errors go to stderr with exit code 1.`;
@@ -87,7 +88,7 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
           args: rest,
           options: {
             mission: { type: 'string' }, kind: { type: 'string' }, title: { type: 'string' }, harness: { type: 'string' },
-            model: { type: 'string' }, effort: { type: 'string' }, brief: { type: 'string' }, 'permission-mode': { type: 'string' },
+            model: { type: 'string' }, effort: { type: 'string' }, brief: { type: 'string' }, 'permission-mode': { type: 'string' }, tier: { type: 'string' },
           },
         });
         print(
@@ -95,7 +96,8 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
             missionId: need(values.mission, 'mission'),
             kind: oneOf(values.kind, 'kind', ['ship', 'sentinel'] as const),
             title: need(values.title, 'title'),
-            harness: need(values.harness, 'harness'),
+            harness: values.harness,
+            tier: values.tier ? oneOf(values.tier, 'tier', ['small'] as const) : undefined,
             model: values.model,
             effort: values.effort,
             brief: values.brief ? await mc.readBrief(values.brief) : undefined,
@@ -181,6 +183,12 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
         const [bin, ...args] = mc.attachCommand();
         const r = spawnSync(bin!, args, { stdio: 'inherit' });
         return r.status ?? 1;
+      }
+
+      case 'dispatch': {
+        const { values } = parseArgs({ args: rest, options: { init: { type: 'boolean' } } });
+        print(values.init ? await mc.dispatchInit() : await mc.dispatchInfo());
+        return 0;
       }
 
       case 'harnesses':

@@ -5,16 +5,17 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Agent, DeliveryMode, Mission, MissionType, Project, Store, Task, TaskKind, Workspace } from '@masterchief/core';
 import { classifyAgent, type BusyVerdict } from './busy.js';
+import { McError } from './mc-error.js';
 import { commanderInstructions } from './commander-instructions.js';
+import { loadRoleConfig, readRules, resolveRoleSetting, rolesFile, rulesFile, STARTER_RULES, type ConfigKey } from './dispatch.js';
 import { git } from './git.js';
-import { getHarness, type Harness } from './harness.js';
+import { getHarness, listHarnesses, type Harness } from './harness.js';
 import type { SessionBackend } from './session-backend.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
 import { agentEnv } from './workspace.js';
 import type { WorktreeProvider } from './worktree-provider.js';
 
-/** An error the Commander should read and act on, as opposed to a bug. */
-export class McError extends Error {}
+export { McError };
 
 export interface McDeps {
   store: Store;
@@ -23,6 +24,8 @@ export interface McDeps {
   /** MasterChief home: holds the database, per-agent state, and reports. */
   home: string;
   harnessFor?: (id: string) => Harness;
+  /** Harness ids offered to the Commander. Defaults to every registered harness. */
+  harnessIds?: () => string[];
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
   /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
@@ -35,9 +38,12 @@ export interface SpawnOptions {
   missionId: string;
   kind: TaskKind;
   title: string;
-  harness: string;
+  /** Omit to use the configured harness for the role. Refused when dispatch rules exist, so the Commander chooses. */
+  harness?: string;
   model?: string | null;
   effort?: string | null;
+  /** Use the small-model settings for short, high-volume work. */
+  tier?: 'small';
   brief?: string;
   dependsOn?: string[];
   permissionMode?: string;
@@ -141,9 +147,13 @@ export class Mc {
   }
 
   async commanderStart(o: { harness?: string; model?: string | null; effort?: string | null; fresh?: boolean; trust?: false | { configFile?: string } } = {}) {
-    const harnessId = o.harness ?? 'claude';
+    const cfg = resolveRoleSetting(await loadRoleConfig(this.d.home), 'commander', {});
+    const harnessId = o.harness ?? cfg.harness ?? 'claude';
+    const sameHarness = !cfg.harness || cfg.harness === harnessId;
+    const model = o.model ?? (sameHarness ? cfg.model : undefined);
+    const effort = o.effort ?? (sameHarness ? cfg.effort : undefined);
     const harness = this.harness(harnessId);
-    const problem = harness.validate(o.model, o.effort);
+    const problem = harness.validate(model, effort);
     if (problem) throw new McError(problem);
 
     const existing = this.findCommander();
@@ -166,8 +176,8 @@ export class Mc {
       role: 'commander',
       cwd: this.commanderDir,
       stateDir: this.stateDir,
-      model: o.model,
-      effort: o.effort,
+      model,
+      effort,
       permissionMode: 'default',
       allowTools: ['Bash(mc *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git status*)', 'Bash(git -C * diff *)', 'Bash(git -C * log *)', 'Bash(git -C * status*)', 'Read', 'Glob', 'Grep'],
       denyTools: ['Edit', 'Write', 'NotebookEdit'],
@@ -189,7 +199,7 @@ export class Mc {
     if (existing) {
       this.store.updateAgent(existing.id, { endpoint, gen: launch.gen, hookLog: launch.hookLog, state: 'starting' });
     } else {
-      this.store.createAgent({ id: 'commander', role: 'commander', harness: harnessId, model: o.model, effort: o.effort, endpoint, gen: launch.gen, hookLog: launch.hookLog });
+      this.store.createAgent({ id: 'commander', role: 'commander', harness: harnessId, model, effort, endpoint, gen: launch.gen, hookLog: launch.hookLog });
     }
     this.store.addEvent({ missionId: null, agentId: 'commander', kind: 'commander-started', payload: { resumed: resume } });
     await this.ensureWatcherBackground();
@@ -323,6 +333,63 @@ export class Mc {
 
   // ---- spawn -----------------------------------------------------------------
 
+  /**
+   * Pick the concrete harness, model and effort. Explicit values win. Without a
+   * harness, dispatch rules force the Commander to choose; otherwise the configured
+   * one is used. Configured model and effort apply only to the configured harness.
+   */
+  private async chooseLaunch(
+    role: ConfigKey,
+    o: { harness?: string; model?: string | null; effort?: string | null; tier?: 'small' },
+    mission: Mission,
+    project: Project,
+  ) {
+    const cfg = resolveRoleSetting(await loadRoleConfig(this.d.home), role, {
+      missionId: mission.id,
+      projectId: project.id,
+      projectPath: project.path,
+      tier: o.tier,
+    });
+    let harnessId = o.harness;
+    if (!harnessId) {
+      if ((await readRules(this.d.home)).active) {
+        throw new McError(`dispatch rules exist (${rulesFile(this.d.home)}): choose a harness, model and effort from them and pass --harness`);
+      }
+      harnessId = cfg.harness;
+    }
+    if (!harnessId) throw new McError(`no harness: pass --harness or set one for "${role}" in ${rolesFile(this.d.home)}`);
+    const sameHarness = !cfg.harness || cfg.harness === harnessId;
+    return {
+      harnessId,
+      model: o.model ?? (sameHarness ? cfg.model ?? null : null),
+      effort: o.effort ?? (sameHarness ? cfg.effort ?? null : null),
+    };
+  }
+
+  /** The captain's dispatch rules, the harnesses available, and the configured defaults. */
+  async dispatchInfo() {
+    const rules = await readRules(this.d.home);
+    return {
+      rulesFile: rules.file,
+      rules: rules.active ? rules.text : null,
+      rolesFile: rolesFile(this.d.home),
+      roleConfig: await loadRoleConfig(this.d.home),
+      harnesses: (this.d.harnessIds ?? listHarnesses)().map((id) => ({ id, efforts: this.harness(id).efforts })),
+    };
+  }
+
+  async dispatchInit(): Promise<{ created: boolean; file: string }> {
+    const file = rulesFile(this.d.home);
+    await mkdir(join(this.d.home, 'config'), { recursive: true });
+    try {
+      await writeFile(file, STARTER_RULES, { flag: 'wx' });
+      return { created: true, file };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return { created: false, file };
+      throw err;
+    }
+  }
+
   private newAgentId(role: Agent['role']): string {
     for (;;) {
       const id = `${role}-${randomBytes(2).toString('hex')}`;
@@ -345,12 +412,13 @@ export class Mc {
       throw new McError(`mission is ${mission.status}: ${mission.id}`);
     }
     const project = this.store.getProject(mission.projectId)!;
-    const harness = this.harness(o.harness);
-    const problem = harness.validate(o.model, o.effort);
-    if (problem) throw new McError(problem);
     if (!o.title.trim()) throw new McError('a task needs a title');
-
     const role = o.kind === 'ship' ? 'pilot' : 'sentinel';
+    const { harnessId, model, effort } = await this.chooseLaunch(role, o, mission, project);
+    const harness = this.harness(harnessId);
+    const problem = harness.validate(model, effort);
+    if (problem) throw new McError(problem);
+
     const access = o.kind === 'ship' ? 'rw' : 'ro';
     const agentId = this.newAgentId(role);
     const task = this.store.createTask({ missionId: mission.id, title: o.title, dependsOn: o.dependsOn ?? [], kind: o.kind });
@@ -363,7 +431,7 @@ export class Mc {
       let slot = this.store.allocateSlot();
       for (let attempt = 0; ; attempt++) {
         try {
-          this.store.createAgent({ id: agentId, role, harness: o.harness, model: o.model, effort: o.effort, workspaceId: ws.id, slot });
+          this.store.createAgent({ id: agentId, role, harness: harnessId, model, effort, workspaceId: ws.id, slot });
           break;
         } catch (err) {
           // Another mc process took the slot between allocation and insert.
@@ -378,8 +446,8 @@ export class Mc {
         role,
         cwd: ws.worktreePath,
         stateDir: this.stateDir,
-        model: o.model,
-        effort: o.effort,
+        model,
+        effort,
         permissionMode: o.permissionMode,
         appendSystemPrompt: this.contract(role, ws, task, mission),
         initialPrompt: o.brief,
