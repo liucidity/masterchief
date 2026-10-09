@@ -29,7 +29,7 @@ test('claude is registered and validates model and effort', () => {
 test('prepare builds the command, env and a settings file with all four hooks', async () => {
   const l = await prep({ model: 'opus', effort: 'high', appendSystemPrompt: 'be brief' });
   expect(l.command.slice(0, 1)).toEqual(['claude']);
-  expect(l.command).toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high', '--permission-mode', 'bypassPermissions', '--append-system-prompt', 'be brief']));
+  expect(l.command).toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', '--append-system-prompt', 'be brief']));
   expect(l.env).toMatchObject({ MC_AGENT_ID: 'pilot-1', MC_ROLE: 'pilot' });
   const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
   expect(Object.keys(settings.hooks).sort()).toEqual(['SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
@@ -95,4 +95,15 @@ test('a guard command becomes a PreToolUse hook for every tool, and unsafe argum
   const without = JSON.parse(await readFile((await prep()).command.at(2)!, 'utf8'));
   expect(without.hooks.PreToolUse).toBeUndefined();
   await expect(prep({ guardCommand: ['/bin/node', "it's"] })).rejects.toThrow(/unsafe argument/);
+});
+
+test('permission posture: acceptEdits with allow rules by default, bypass only when asked, and explicit tools win', async () => {
+  const dflt = (await prep()).command;
+  expect(dflt).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits', '--allowedTools']));
+  expect(dflt).not.toContain('bypassPermissions');
+  const bypass = (await prep({ permissionMode: 'bypassPermissions' })).command;
+  expect(bypass).toEqual(expect.arrayContaining(['--permission-mode', 'bypassPermissions']));
+  expect(bypass).not.toContain('--allowedTools');
+  const custom = (await prep({ allowTools: ['Read'] })).command;
+  expect(custom.slice(custom.indexOf('--allowedTools'), custom.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'Read']);
 });

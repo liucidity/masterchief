@@ -4,6 +4,9 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { registerHarness, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
 
+/** Tools a crew member may use without asking. The guard hook still screens every call. */
+export const CREW_TOOLS = ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /** Hook events written to the per-agent log, one per line: `<gen> <epoch-seconds> <event>`. */
@@ -95,9 +98,13 @@ export const claudeHarness: Harness = {
     await writeFile(settingsFile, JSON.stringify(claudeHookSettings(log, gen, opts.guardCommand), null, 2));
     if (opts.trust !== false) await registerClaudeTrust([opts.cwd], opts.trust?.configFile);
 
-    const command = ['claude', '--settings', settingsFile, '--permission-mode', opts.permissionMode ?? 'bypassPermissions'];
+    // Autonomous crew run in acceptEdits mode with explicit allow rules. The bypassPermissions flag
+    // raises a one-time, machine-wide consent dialog no agent can answer, so it is opt-in.
+    const mode = opts.permissionMode ?? 'acceptEdits';
+    const allow = opts.allowTools ?? (mode === 'bypassPermissions' ? [] : CREW_TOOLS);
+    const command = ['claude', '--settings', settingsFile, '--permission-mode', mode];
     if (opts.resume) command.push('--continue');
-    if (opts.allowTools?.length) command.push('--allowedTools', ...opts.allowTools);
+    if (allow.length) command.push('--allowedTools', ...allow);
     if (opts.denyTools?.length) command.push('--disallowedTools', ...opts.denyTools);
     if (opts.model) command.push('--model', opts.model);
     if (opts.effort) command.push('--effort', opts.effort);
