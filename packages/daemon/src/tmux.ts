@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import type { CreateSessionOptions, EndpointStatus, SessionBackend, SessionInfo } from './session-backend.js';
 
@@ -114,6 +115,9 @@ export class TmuxBackend implements SessionBackend {
 
   /** Stop the whole tmux server for this socket. Used by tests. */
   async killServer(): Promise<void> {
+    const path = (await this.tmux('display-message', '-p', '#{socket_path}').catch(() => '')).trim();
     await this.tmux('kill-server').catch(() => undefined);
+    // tmux leaves its socket file behind after a kill; remove it so tests do not accumulate them.
+    if (path) await rm(path, { force: true });
   }
 }
