@@ -8,3 +8,4 @@ export * from './harness.js';
 export * from './mc.js';
 export * from './cli.js';
 export * from './watcher.js';
+export * from './commander-instructions.js';

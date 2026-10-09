@@ -90,6 +90,9 @@ export const claudeHarness: Harness = {
     if (opts.trust !== false) await registerClaudeTrust([opts.cwd], opts.trust?.configFile);
 
     const command = ['claude', '--settings', settingsFile, '--permission-mode', opts.permissionMode ?? 'bypassPermissions'];
+    if (opts.resume) command.push('--continue');
+    if (opts.allowTools?.length) command.push('--allowedTools', ...opts.allowTools);
+    if (opts.denyTools?.length) command.push('--disallowedTools', ...opts.denyTools);
     if (opts.model) command.push('--model', opts.model);
     if (opts.effort) command.push('--effort', opts.effort);
     if (opts.appendSystemPrompt) command.push('--append-system-prompt', opts.appendSystemPrompt);

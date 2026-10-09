@@ -13,6 +13,12 @@ export interface HarnessPrepareOptions {
   permissionMode?: string;
   /** Standing instructions added to the CLI's system prompt. */
   appendSystemPrompt?: string;
+  /** Tool patterns the CLI may use without asking, for example Bash(mc *). */
+  allowTools?: string[];
+  /** Tools removed from the CLI entirely. */
+  denyTools?: string[];
+  /** Continue the most recent conversation in this directory instead of starting fresh. */
+  resume?: boolean;
   /** The first message the agent receives, delivered at launch so no ready-detection is needed. */
   initialPrompt?: string;
   /** Pre-register the worktree with the CLI's trust store. Pass false to leave the user's config alone. */

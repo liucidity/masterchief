@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { listHarnesses } from './harness.js';
 import { McError, type Mc } from './mc.js';
@@ -22,6 +23,10 @@ const HELP = `mc - control the MasterChief crew
   mc teardown <task|agent> [--force] [--outcome done|failed]
   mc events [--after <seq>] [--peek] [--mission <id>]
   mc watch [--interval <ms>] [--once] [--unknown-after <s>] [--stale-after <s>]
+  mc watch --status | --background | --stop
+  mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
+  mc commander stop | mc commander status
+  mc attach
   mc harnesses
 
 Every command prints JSON. Errors go to stderr with exit code 1.`;
@@ -34,6 +39,9 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
   if (!v || !allowed.includes(v as T)) throw new McError(`--${flag} must be one of: ${allowed.join(', ')}`);
   return v as T;
 };
+
+/** Every top-level command, for checks that documentation mentions only real ones. */
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'dispatch', 'watch', 'commander', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -129,8 +137,14 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       case 'watch': {
         const { values } = parseArgs({
           args: rest,
-          options: { interval: { type: 'string' }, once: { type: 'boolean' }, 'unknown-after': { type: 'string' }, 'stale-after': { type: 'string' } },
+          options: {
+            interval: { type: 'string' }, once: { type: 'boolean' }, 'unknown-after': { type: 'string' }, 'stale-after': { type: 'string' },
+            status: { type: 'boolean' }, background: { type: 'boolean' }, stop: { type: 'boolean' },
+          },
         });
+        if (values.status) return (print(await mc.watchStatus()), 0);
+        if (values.background) return (print(await mc.ensureWatcherBackground()), 0);
+        if (values.stop) return (print(await mc.stopWatcher()), 0);
         const w = mc.watcher({
           unknownAfterSecs: values['unknown-after'] ? Number(values['unknown-after']) : undefined,
           staleAfterSecs: values['stale-after'] ? Number(values['stale-after']) : undefined,
@@ -149,6 +163,24 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
           await release();
         }
         return 0;
+      }
+
+      case 'commander': {
+        const [sub, ...a] = rest;
+        if (sub === 'start') {
+          const { values } = parseArgs({ args: a, options: { harness: { type: 'string' }, model: { type: 'string' }, effort: { type: 'string' }, fresh: { type: 'boolean' } } });
+          print(await mc.commanderStart({ harness: values.harness, model: values.model, effort: values.effort, fresh: values.fresh }));
+          return 0;
+        }
+        if (sub === 'stop') return (print(await mc.commanderStop()), 0);
+        if (sub === 'status') return (print(await mc.commanderStatus()), 0);
+        throw new McError('usage: mc commander start|stop|status');
+      }
+
+      case 'attach': {
+        const [bin, ...args] = mc.attachCommand();
+        const r = spawnSync(bin!, args, { stdio: 'inherit' });
+        return r.status ?? 1;
       }
 
       case 'harnesses':

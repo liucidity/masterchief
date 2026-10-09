@@ -103,6 +103,10 @@ export class TmuxBackend implements SessionBackend {
       });
   }
 
+  attachCommand(endpoint: string): string[] {
+    return ['tmux', '-L', this.socket, 'select-window', '-t', endpoint, ';', 'attach-session', '-t', this.session];
+  }
+
   /** Stop the whole tmux server for this socket. Used by tests. */
   async killServer(): Promise<void> {
     await this.tmux('kill-server').catch(() => undefined);

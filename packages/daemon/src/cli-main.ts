@@ -1,5 +1,6 @@
 #!/usr/bin/env -S node --disable-warning=ExperimentalWarning
 import { mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, Store } from '@masterchief/core';
@@ -16,6 +17,8 @@ const mc = new Mc({
   tmux: new TmuxBackend({ socket: process.env.MC_TMUX_SOCKET }),
   worktrees: freshWorktrees,
   home,
+  cliPath: fileURLToPath(import.meta.url),
+  extraEnv: process.env.MC_TMUX_SOCKET ? { MC_TMUX_SOCKET: process.env.MC_TMUX_SOCKET } : {},
 });
 process.exitCode = await runCli(process.argv.slice(2), mc, {
   out: (t) => process.stdout.write(`${t}\n`),

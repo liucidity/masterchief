@@ -29,4 +29,6 @@ export interface SessionBackend {
   status(endpoint: string): Promise<EndpointStatus>;
   destroy(endpoint: string): Promise<void>;
   list(): Promise<SessionInfo[]>;
+  /** Command line that attaches a human's terminal to an endpoint, when the backend supports it. */
+  attachCommand?(endpoint: string): string[];
 }

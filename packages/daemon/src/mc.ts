@@ -1,8 +1,11 @@
+import { spawn as spawnProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { chmod, open as openFile } from 'node:fs/promises';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Agent, DeliveryMode, Mission, MissionType, Project, Store, Task, TaskKind, Workspace } from '@masterchief/core';
 import { classifyAgent, type BusyVerdict } from './busy.js';
+import { commanderInstructions } from './commander-instructions.js';
 import { git } from './git.js';
 import { getHarness, type Harness } from './harness.js';
 import type { SessionBackend } from './session-backend.js';
@@ -22,6 +25,10 @@ export interface McDeps {
   harnessFor?: (id: string) => Harness;
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
+  /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
+  cliPath?: string;
+  /** Extra environment for every agent, such as the tmux socket name. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface SpawnOptions {
@@ -107,6 +114,153 @@ export class Mc {
 
   watcher(opts?: WatcherOptions): Watcher {
     return new Watcher(this, this.d.store, this.d.tmux, opts);
+  }
+
+  // ---- commander and background watcher --------------------------------------
+
+  get commanderDir() {
+    return join(this.d.home, 'commander');
+  }
+
+  private findCommander(): Agent | undefined {
+    return this.store.listAgents().find((a) => a.role === 'commander');
+  }
+
+  /** Write a small `mc` script the Commander's shell can run, without a global install. */
+  private async writeShim(): Promise<string | undefined> {
+    if (!this.d.cliPath) return undefined;
+    for (const p of [this.d.cliPath, process.execPath]) {
+      if (p.includes("'")) throw new McError(`unsafe path for the mc shim: ${p}`);
+    }
+    const dir = join(this.d.home, 'bin');
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, 'mc');
+    await writeFile(file, `#!/bin/sh\nexec '${process.execPath}' --disable-warning=ExperimentalWarning '${this.d.cliPath}' "$@"\n`);
+    await chmod(file, 0o755);
+    return dir;
+  }
+
+  async commanderStart(o: { harness?: string; model?: string | null; effort?: string | null; fresh?: boolean; trust?: false | { configFile?: string } } = {}) {
+    const harnessId = o.harness ?? 'claude';
+    const harness = this.harness(harnessId);
+    const problem = harness.validate(o.model, o.effort);
+    if (problem) throw new McError(problem);
+
+    const existing = this.findCommander();
+    if (existing && existing.state !== 'retired' && existing.endpoint) {
+      if ((await this.d.tmux.status(existing.endpoint)) === 'alive') {
+        await this.ensureWatcherBackground();
+        return { agentId: existing.id, endpoint: existing.endpoint, already: true };
+      }
+      await this.d.tmux.destroy(existing.endpoint);
+    }
+
+    await mkdir(this.commanderDir, { recursive: true });
+    await writeFile(join(this.commanderDir, 'CLAUDE.md'), commanderInstructions({ home: this.d.home }));
+    await mkdir(join(this.d.home, 'config'), { recursive: true });
+    const binDir = await this.writeShim();
+
+    const resume = !!existing && !o.fresh;
+    const launch = await harness.prepare({
+      agentId: 'commander',
+      role: 'commander',
+      cwd: this.commanderDir,
+      stateDir: this.stateDir,
+      model: o.model,
+      effort: o.effort,
+      permissionMode: 'default',
+      allowTools: ['Bash(mc *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git status*)', 'Bash(git -C * diff *)', 'Bash(git -C * log *)', 'Bash(git -C * status*)', 'Read', 'Glob', 'Grep'],
+      denyTools: ['Edit', 'Write', 'NotebookEdit'],
+      resume,
+      initialPrompt: 'Session start. Follow the Session start section of your instructions.',
+      trust: o.trust,
+    });
+    const endpoint = await this.d.tmux.create({
+      name: 'commander',
+      cwd: this.commanderDir,
+      command: launch.command,
+      env: {
+        ...launch.env,
+        ...this.d.extraEnv,
+        MC_HOME: this.d.home,
+        ...(binDir ? { PATH: `${binDir}:${process.env.PATH ?? ''}` } : {}),
+      },
+    });
+    if (existing) {
+      this.store.updateAgent(existing.id, { endpoint, gen: launch.gen, hookLog: launch.hookLog, state: 'starting' });
+    } else {
+      this.store.createAgent({ id: 'commander', role: 'commander', harness: harnessId, model: o.model, effort: o.effort, endpoint, gen: launch.gen, hookLog: launch.hookLog });
+    }
+    this.store.addEvent({ missionId: null, agentId: 'commander', kind: 'commander-started', payload: { resumed: resume } });
+    await this.ensureWatcherBackground();
+    return { agentId: 'commander', endpoint, already: false, resumed: resume };
+  }
+
+  async commanderStop() {
+    const c = this.findCommander();
+    if (!c || c.state === 'retired') throw new McError('no commander is running');
+    if (c.endpoint) await this.d.tmux.destroy(c.endpoint);
+    this.store.updateAgent(c.id, { state: 'retired' });
+    return { ok: true };
+  }
+
+  async commanderStatus() {
+    const c = this.findCommander();
+    return c && c.state !== 'retired' ? { agent: c, verdict: await this.verdict(c) } : { agent: null, verdict: null };
+  }
+
+  /** Command line that attaches the human's terminal to the Commander. */
+  attachCommand(): string[] {
+    const c = this.findCommander();
+    if (!c || c.state === 'retired' || !c.endpoint) throw new McError('no commander is running (start it with: mc commander start)');
+    if (!this.d.tmux.attachCommand) throw new McError('this session backend cannot be attached to');
+    return this.d.tmux.attachCommand(c.endpoint);
+  }
+
+  async watchStatus(): Promise<{ running: boolean; pid?: number }> {
+    const pid = Number(await readFile(join(this.d.home, 'watch.pid'), 'utf8').catch(() => ''));
+    if (pid > 0) {
+      try {
+        process.kill(pid, 0);
+        return { running: true, pid };
+      } catch {
+        /* stale */
+      }
+    }
+    return { running: false };
+  }
+
+  /** Start the watcher as a detached process if none is running. */
+  async ensureWatcherBackground(): Promise<{ running: boolean; pid?: number; started: boolean }> {
+    const now = await this.watchStatus();
+    if (now.running) return { ...now, started: false };
+    if (!this.d.cliPath) return { running: false, started: false };
+    await mkdir(this.d.home, { recursive: true });
+    const log = await openFile(join(this.d.home, 'watch.log'), 'a');
+    const child = spawnProcess(process.execPath, ['--disable-warning=ExperimentalWarning', this.d.cliPath, 'watch'], {
+      detached: true,
+      stdio: ['ignore', log.fd, log.fd],
+      env: { ...process.env, MC_HOME: this.d.home, ...this.d.extraEnv },
+    });
+    child.unref();
+    await log.close();
+    for (let i = 0; i < 40; i++) {
+      await sleep(50);
+      const s = await this.watchStatus();
+      if (s.running) return { ...s, started: true };
+    }
+    throw new McError(`the watcher did not start; see ${join(this.d.home, 'watch.log')}`);
+  }
+
+  async stopWatcher(): Promise<{ stopped: boolean }> {
+    const s = await this.watchStatus();
+    if (!s.running) return { stopped: false };
+    process.kill(s.pid!, 'SIGTERM');
+    for (let i = 0; i < 60; i++) {
+      await sleep(50);
+      if (!(await this.watchStatus()).running) return { stopped: true };
+    }
+    throw new McError(`watcher ${s.pid} did not stop`);
   }
 
   // ---- projects and missions -------------------------------------------------
