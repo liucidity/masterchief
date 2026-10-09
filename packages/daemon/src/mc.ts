@@ -12,6 +12,7 @@ import { loadRoleConfig, readRules, resolveRoleSetting, rolesFile, rulesFile, ST
 import { git } from './git.js';
 import { getHarness, listHarnesses, type Harness } from './harness.js';
 import type { SessionBackend } from './session-backend.js';
+import { Cortana } from './cortana.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
 import { agentEnv } from './workspace.js';
 import type { WorktreeProvider } from './worktree-provider.js';
@@ -29,6 +30,8 @@ export interface McDeps {
   harnessIds?: () => string[];
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
+  /** Opens another MasterChief home, for a second mate. The session names the tmux session its windows go in. */
+  openHome?: (home: string, session: string) => Mc;
   /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
   cliPath?: string;
   /** Path to the compiled guard entrypoint. Crew members run it before every tool call. */
@@ -69,7 +72,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const TERMINAL_TASK = new Set(['done', 'failed']);
 
 export class Mc {
-  constructor(private d: McDeps) {}
+  constructor(readonly d: McDeps) {}
 
   private get store() {
     return this.d.store;
@@ -124,6 +127,12 @@ export class Mc {
     throw new McError('could not take the watcher lock');
   }
 
+  /** Second mates: persistent sub-supervisors with their own homes. */
+  get cortana(): Cortana {
+    return (this._cortana ??= new Cortana(this));
+  }
+  private _cortana?: Cortana;
+
   watcher(opts?: WatcherOptions): Watcher {
     return new Watcher(this, this.d.store, this.d.tmux, opts);
   }
@@ -152,7 +161,15 @@ export class Mc {
     return dir;
   }
 
-  async commanderStart(o: { harness?: string; model?: string | null; effort?: string | null; fresh?: boolean; trust?: false | { configFile?: string } } = {}) {
+  /** Write the Commander's instructions and mc shim. Safe to repeat. Returns the shim directory. */
+  async writeCommanderFiles(instructions: { role?: 'commander' | 'cortana'; scope?: string; projects?: string[] } = {}): Promise<string | undefined> {
+    await mkdir(this.commanderDir, { recursive: true });
+    await writeFile(join(this.commanderDir, 'CLAUDE.md'), commanderInstructions({ home: this.d.home, ...instructions }));
+    await mkdir(join(this.d.home, 'config'), { recursive: true });
+    return this.writeShim();
+  }
+
+  async commanderStart(o: { harness?: string; model?: string | null; effort?: string | null; fresh?: boolean; trust?: false | { configFile?: string }; instructions?: { role?: 'commander' | 'cortana'; scope?: string; projects?: string[] } } = {}) {
     const cfg = resolveRoleSetting(await loadRoleConfig(this.d.home), 'commander', {});
     const harnessId = o.harness ?? cfg.harness ?? 'claude';
     const sameHarness = !cfg.harness || cfg.harness === harnessId;
@@ -172,9 +189,7 @@ export class Mc {
     }
 
     await mkdir(this.commanderDir, { recursive: true });
-    await writeFile(join(this.commanderDir, 'CLAUDE.md'), commanderInstructions({ home: this.d.home }));
-    await mkdir(join(this.d.home, 'config'), { recursive: true });
-    const binDir = await this.writeShim();
+    const binDir = await this.writeCommanderFiles(o.instructions);
 
     const resume = !!existing && !o.fresh;
     const launch = await harness.prepare({
@@ -188,7 +203,10 @@ export class Mc {
       allowTools: ['Bash(mc *)', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git status*)', 'Bash(git -C * diff *)', 'Bash(git -C * log *)', 'Bash(git -C * status*)', 'Read', 'Glob', 'Grep'],
       denyTools: ['Edit', 'Write', 'NotebookEdit'],
       resume,
-      initialPrompt: 'Session start. Follow the Session start section of your instructions.',
+      initialPrompt:
+        o.instructions?.role === 'cortana'
+          ? 'Session start. Follow the Session start section of your instructions. Do not begin new work until the Commander routes some to you.'
+          : 'Session start. Follow the Session start section of your instructions.',
       trust: o.trust,
     });
     const endpoint = await this.d.tmux.create({
@@ -517,14 +535,8 @@ export class Mc {
 
   // ---- status / send / teardown / events -------------------------------------
 
-  async status(ref?: string, opts: { lines?: number } = {}) {
-    if (ref) {
-      const task = this.findTask(ref);
-      const agent = this.agentOf(task);
-      const verdict = await this.verdict(agent);
-      const screen = agent.endpoint && agent.state !== 'retired' ? await this.d.tmux.capture(agent.endpoint, opts.lines ?? 60).catch(() => '') : '';
-      return { task, agent, verdict, screen };
-    }
+  /** Live agents with a task, in every mission. */
+  async fleet() {
     const rows = [];
     for (const m of this.store.listMissions()) {
       for (const task of this.store.listTasks(m.id)) {
@@ -536,9 +548,27 @@ export class Mc {
     return rows;
   }
 
-  async send(ref: string, o: SendOptions): Promise<{ ok: true }> {
+  /** One task in detail: its agent, live verdict, and the end of its screen. */
+  async taskStatus(ref: string, opts: { lines?: number } = {}) {
     const task = this.findTask(ref);
     const agent = this.agentOf(task);
+    const verdict = await this.verdict(agent);
+    const screen = agent.endpoint && agent.state !== 'retired' ? await this.d.tmux.capture(agent.endpoint, opts.lines ?? 60).catch(() => '') : '';
+    return { task, agent, verdict, screen };
+  }
+
+  async status(): Promise<Awaited<ReturnType<Mc['fleet']>>>;
+  async status(ref: string, opts?: { lines?: number }): Promise<Awaited<ReturnType<Mc['taskStatus']>>>;
+  async status(ref?: string, opts: { lines?: number } = {}) {
+    return ref ? this.taskStatus(ref, opts) : this.fleet();
+  }
+
+  async send(ref: string, o: SendOptions): Promise<{ ok: true }> {
+    return this.sendToAgent(this.agentOf(this.findTask(ref)), o);
+  }
+
+  /** Type into a running agent's terminal. */
+  async sendToAgent(agent: Agent, o: SendOptions): Promise<{ ok: true }> {
     if (!agent.endpoint || agent.state === 'retired') throw new McError(`agent is not running: ${agent.id}`);
     const status = await this.d.tmux.status(agent.endpoint);
     if (status !== 'alive') throw new McError(`agent endpoint is ${status}: ${agent.id}`);

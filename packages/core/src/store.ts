@@ -373,12 +373,12 @@ export class Store {
     this.setSetting('afk_active', active ? '1' : '0');
   }
 
-  createCortanaHome(c: Omit<CortanaHome, 'id'>): CortanaHome {
-    const id = randomUUID();
+  createCortanaHome(c: Omit<CortanaHome, 'id'> & { id?: string }): CortanaHome {
+    const id = c.id ?? randomUUID();
     this.db
       .prepare('INSERT INTO cortana_home (id, scope, projects, home_path, route, harness) VALUES (?,?,?,?,?,?)')
       .run(id, c.scope, JSON.stringify(c.projects), c.homePath, c.route, c.harness);
-    return { id, ...c };
+    return { ...c, id };
   }
 
   getCortanaHome(id: string): CortanaHome | undefined {

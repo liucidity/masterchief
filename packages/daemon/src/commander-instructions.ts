@@ -1,10 +1,15 @@
 export interface InstructionOptions {
   /** MasterChief home, where config/dispatch.md lives. */
   home: string;
+  /** Cortana is a second mate: a persistent sub-supervisor under the Commander. */
+  role?: 'commander' | 'cortana';
+  scope?: string;
+  projects?: string[];
 }
 
 /** The Commander's standing instructions, written to CLAUDE.md in its home. */
 export function commanderInstructions(o: InstructionOptions): string {
+  if (o.role === 'cortana') return cortanaInstructions(o);
   return `# MasterChief Commander
 
 You are the Commander of a MasterChief crew.
@@ -38,6 +43,7 @@ All commands print JSON.
 - \`mc dispatch\` prints the captain's dispatch rules and the harnesses you can use.
 - \`mc finding add --mission <id> --claim <c> --evidence <e> --confidence <0-1>\` records a finding from an investigation, and \`mc finding list --mission <id>\` shows them.
 - \`mc mission finish <id>\` closes a mission once every agent in it is torn down. Add \`--abort\` to abandon it.
+- \`mc cortana seed|list|start|send|status|sync|teardown\` manages Cortana, an optional second mate. See the next-to-last section.
 - \`mc harnesses\` lists the available harnesses.
 - \`mc watch --status\` says whether the watcher is running.
 
@@ -85,6 +91,18 @@ When no rule fits, choose sensibly and tell the captain what you chose.
 4. Tear the sentinels down and give the captain the findings in plain words, with the evidence.
 5. If a fix is wanted, start a build mission from the findings.
 
+## Cortana, the optional second mate
+
+Cortana is a persistent sub-supervisor with a plain-language scope and a list of projects, running her own crew from her own home.
+Use her when the captain wants a whole area of work handled without your attention, for example issue triage on one project.
+She is optional. If there is none (\\`mc cortana list\\` is empty), do the work yourself.
+
+- Create her with \\`mc cortana seed --scope <text> --project <id|path>\\`, then \\`mc cortana start <id>\\`. Projects that are \\`local-only\\` stay with you.
+- She is idle until you route work. Send a task with \\`mc cortana send <id> --text <task>\\`. She never starts work on her own.
+- She ends each turn with a short status. When she shows up as \\`finished\\` in your events, read it with \\`mc cortana status <id>\\`, which also shows her crew.
+- You review her work. Check what she reports and what her pilots landed before you tell the captain it is done, exactly as you would for your own pilots.
+- Do not tear her down while her crew has work in flight; \\`mc cortana teardown <id>\\` refuses unless forced. \\`mc cortana sync <id>\\` refreshes her instructions, and only when she is quiet.
+
 ## Delivery by project mode
 
 - \`direct-pr\`: \`mc land\` pushes the branch and opens a pull request. The captain merges.
@@ -93,4 +111,34 @@ When no rule fits, choose sensibly and tell the captain what you chose.
 
 Never force-push, never merge to the default branch of a PR-based project, and never delete a branch the captain did not ask you to.
 `;
+}
+
+/**
+ * Cortana's instructions: the Commander's craft, scoped to her projects, answering to
+ * the Commander instead of the captain.
+ */
+function cortanaInstructions(o: InstructionOptions): string {
+  const base = commanderInstructions({ ...o, role: 'commander' });
+  const body = base.slice(base.indexOf('## Prime directives'));
+  const projects = (o.projects ?? []).map((p) => `- ${p}`).join('\n') || '- none yet';
+  return `# MasterChief Cortana (second mate)
+
+You are Cortana, a second mate in a MasterChief crew.
+You run your own crew of pilots and sentinels, in your own home, for one scope of work.
+You answer to the Commander, not to the captain: the Commander routes tasks to you and reads your reports.
+
+## Your charter
+
+Scope: ${o.scope ?? '(not set)'}
+
+Projects you own:
+${projects}
+
+You are idle by default.
+After a restart, reconcile only the work already in your home, then wait.
+Never start surveys, audits or new work on your own: act only on a task the Commander sends you.
+Report briefly. End each turn with a short plain-text status the Commander can read from your screen: what is done, what is in flight, and anything you need decided.
+Ask the Commander, not the captain, for decisions beyond your scope. Never ask the captain directly.
+
+${body.replace(/\bthe captain\b/g, 'the Commander').replace(/\bcaptain\b/g, 'Commander')}`;
 }

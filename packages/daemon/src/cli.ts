@@ -30,6 +30,9 @@ const HELP = `mc - control the MasterChief crew
   mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
   mc commander stop | mc commander status
   mc attach
+  mc cortana seed --scope <text> --project <id|path> [--project ...] [--id <slug>] [--harness <h>]
+  mc cortana list | start <id> [--fresh] | send <id> --text <t> | status <id> | sync <id>
+  mc cortana teardown <id> [--force] [--purge]
   mc dispatch [--init]
   mc harnesses
 
@@ -45,7 +48,7 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
 };
 
 /** Every top-level command, for checks that documentation mentions only real ones. */
-export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'attach', 'harnesses', 'help'];
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'cortana', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -208,6 +211,45 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
         if (sub === 'stop') return (print(await mc.commanderStop()), 0);
         if (sub === 'status') return (print(await mc.commanderStatus()), 0);
         throw new McError('usage: mc commander start|stop|status');
+      }
+
+      case 'cortana': {
+        const [sub, ...a] = rest;
+        const { values, positionals } = parseArgs({
+          args: a,
+          allowPositionals: true,
+          options: {
+            scope: { type: 'string' }, project: { type: 'string', multiple: true }, id: { type: 'string' }, harness: { type: 'string' },
+            fresh: { type: 'boolean' }, text: { type: 'string' }, force: { type: 'boolean' }, purge: { type: 'boolean' }, lines: { type: 'string' },
+          },
+        });
+        const id = positionals[0];
+        const cortana = mc.cortana;
+        switch (sub) {
+          case 'seed':
+            print(await cortana.seed({ scope: need(values.scope, 'scope'), projects: values.project ?? [], id: values.id, harness: values.harness }));
+            return 0;
+          case 'list':
+            print(cortana.list());
+            return 0;
+          case 'start':
+            print(await cortana.start(need(id, 'cortana id'), { fresh: values.fresh }));
+            return 0;
+          case 'send':
+            print(await cortana.send(need(id, 'cortana id'), need(values.text, 'text')));
+            return 0;
+          case 'status':
+            print(await cortana.status(need(id, 'cortana id'), values.lines ? Number(values.lines) : undefined));
+            return 0;
+          case 'sync':
+            print(await cortana.sync(need(id, 'cortana id')));
+            return 0;
+          case 'teardown':
+            print(await cortana.teardown(need(id, 'cortana id'), { force: values.force, purge: values.purge }));
+            return 0;
+          default:
+            throw new McError('usage: mc cortana seed|list|start|send|status|sync|teardown');
+        }
       }
 
       case 'attach': {
