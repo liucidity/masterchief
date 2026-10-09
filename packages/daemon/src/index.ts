@@ -1,1 +1,1 @@
-export const name = '@masterchief/daemon';
+export * from './workspace.js';
