@@ -215,3 +215,28 @@ test('a permission prompt is reported at once as blocked, then the agent carries
   await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle');
   expect(kinds(await tick(w))).toEqual(['finished']);
 }, 15_000);
+
+test('a wake is held back while someone is typing to the Commander, then delivered', async () => {
+  const r = await start('fake', 'job');
+  const launch = await fakeHarness.prepare({ agentId: 'commander', role: 'commander', cwd: repo, stateDir: join(home, 'state'), initialPrompt: 'start' });
+  const ep = await tmux.create({ name: 'commander', cwd: repo, command: launch.command, env: launch.env });
+  store.createAgent({ id: 'commander', role: 'commander', harness: 'fake', endpoint: ep, gen: launch.gen, hookLog: launch.hookLog });
+  await waitFor(async () => (await mc.verdict(store.getAgent('commander')!)).state === 'idle');
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle');
+
+  await tmux.sendText(ep, 'draft: the captain is typing');
+  await waitFor(async () => (await tmux.capture(ep, 30)).includes('draft: the captain is typing'));
+  const w = watcher();
+  expect(kinds(await tick(w))).toEqual(['finished']);
+  await tick(w);
+  const screenNow = await tmux.capture(ep, 30);
+  expect(screenNow).not.toContain('[mc wake]');
+  expect(screenNow).toContain('draft: the captain is typing');
+  expect(store.getSetting('wake_cursor')).toBeUndefined();
+
+  await tmux.sendKeys(ep, 'C-u');
+  await waitFor(async () => !(await tmux.capture(ep, 30)).trimEnd().split('\n').at(-1)!.startsWith('draft:'));
+  await tick(w);
+  await waitFor(async () => (await tmux.capture(ep, 30)).includes('got: [mc wake] 1 new event(s): finished'));
+  expect(Number(store.getSetting('wake_cursor'))).toBeGreaterThan(0);
+}, 20_000);

@@ -1,4 +1,5 @@
 import type { Agent, Store, StoredEvent } from '@masterchief/core';
+import { McError } from './mc-error.js';
 import type { Mc } from './mc.js';
 import type { SessionBackend } from './session-backend.js';
 
@@ -122,9 +123,13 @@ export class Watcher {
     const verdict = await this.mc.verdict(commander);
     if (verdict.state !== 'idle') return;
     const summary = pending.map((e) => `${e.kind} ${e.agentId}`).join(', ');
-    await this.tmux.sendText(commander.endpoint!, `[mc wake] ${pending.length} new event(s): ${summary}. Run: mc events`);
-    await new Promise((r) => setTimeout(r, 150));
-    await this.tmux.sendKeys(commander.endpoint!, 'Enter');
+    // If a person is typing to the Commander, or a dialog is open, wait for the next tick.
+    try {
+      await this.mc.sendToAgent(commander, { text: `[mc wake] ${pending.length} new event(s): ${summary}. Run: mc events` });
+    } catch (err) {
+      if (err instanceof McError) return;
+      throw err;
+    }
     this.store.setSetting('wake_cursor', String(pending[pending.length - 1]!.seq));
   }
 

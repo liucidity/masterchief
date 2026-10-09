@@ -218,3 +218,24 @@ test('for a harness that cannot report turn starts, mc records the prompt when i
   expect(await lastHookEvent(agent.hookLog!, agent.gen!)).toMatchObject({ event: 'prompt' });
   expect((await mc.status(r.agentId)).verdict).toMatchObject({ state: 'busy' });
 });
+
+test('text is refused while the agent waits at a prompt or has a draft, but keys and --force still work', async () => {
+  const { mission } = await setup();
+  const r = await spawn(mission.id, { brief: 'start' });
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle');
+
+  await mc.send(r.agentId, { text: 'draft: half a thought', noEnter: true });
+  await waitFor(async () => (await screen(r.agentId)).includes('draft: half a thought'));
+  await expect(mc.send(r.agentId, { text: 'hello' })).rejects.toThrow(/input box is not empty/);
+  await mc.send(r.agentId, { keys: ['C-u'] });
+  await waitFor(async () => !(await screen(r.agentId)).trimEnd().split('\n').at(-1)!.startsWith('draft:'));
+  await mc.send(r.agentId, { text: 'hello' });
+  await waitFor(async () => (await screen(r.agentId)).includes('got: hello'));
+
+  await mc.send(r.agentId, { text: 'ask permission' });
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'waiting');
+  await expect(mc.send(r.agentId, { text: 'yes please' })).rejects.toThrow(/waiting at a prompt, and typing would answer it/);
+  await mc.send(r.agentId, { keys: ['C-u'] });
+  await mc.send(r.agentId, { text: 'forced', force: true });
+  await waitFor(async () => (await screen(r.agentId)).includes('got: forced'));
+}, 20_000);

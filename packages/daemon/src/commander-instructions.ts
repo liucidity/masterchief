@@ -36,7 +36,7 @@ All commands print JSON.
 - \`mc mission new --project <id|path> --type build|investigate --goal <text>\`, \`mc mission list\`, \`mc mission show <id>\`
 - \`mc spawn --mission <id> --kind ship|sentinel --title <text> --harness <name> [--model <m>] [--effort <e>] --brief <text|@file>\`
 - \`mc status [<task|agent>] [--lines <n>]\` shows state and the end of an agent's screen.
-- \`mc send <task|agent> --text <t>\` steers an agent. Add \`--interrupt\` to stop its current turn.
+- \`mc send <task|agent> --text <t>\` steers an agent. Add \`--interrupt\` to stop its current turn. It refuses, and types nothing, while the agent is waiting at a prompt or someone is typing in its input box; read its screen and try again later. Never add \`--force\` to get past that.
 - \`mc review <task|agent> --verdict approve|reject|escalate --notes <why>\` records your verdict on a pilot's work. Landing requires an approving verdict.
 - \`mc land <task|agent>\` delivers a pilot's finished branch according to the project mode.
 - \`mc teardown <task|agent>\` removes a finished agent and its worktree. It refuses while work is unlanded.

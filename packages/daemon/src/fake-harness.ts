@@ -12,6 +12,8 @@ export const fakeHarness: Harness = {
   id: 'fake',
   efforts: ['low', 'high'],
   semanticBusy: true,
+  // A draft shows up as the last line of the screen, typed but not submitted.
+  composerState: (screen) => (screen.trimEnd().split('\n').at(-1)?.startsWith('draft:') ? 'typing' : 'empty'),
   exitText: 'exit',
   interruptKeys: ['C-c'],
   validate(model, effort) {
@@ -25,7 +27,7 @@ export const fakeHarness: Harness = {
     const hookLog = hookLogPath(opts.stateDir, opts.agentId);
     const script = [
       `ev() { printf '%s %s %s\\n' '${gen}' "$(date +%s)" "$1" >> '${hookLog}'; }`,
-      `turn() { ev prompt; case "$1" in slow*) sleep 1.5;; ask*) ev waiting; sleep 1.5; ev working; sleep 1;; hang*) sleep 60;; "do: "*) sh -c "${'$'}{1#do: }";; esac; echo "got: $1"; ev stop; }`,
+      `turn() { ev prompt; case "$1" in slow*) sleep 1.5;; ask*) ev waiting; sleep 3; ev working; sleep 1;; hang*) sleep 60;; "do: "*) sh -c "${'$'}{1#do: }";; esac; echo "got: $1"; ev stop; }`,
       `echo ready`,
       `if [ -n "$MC_FIRST" ]; then turn "$MC_FIRST"; fi`,
       `while IFS= read -r line; do turn "$line"; done`,

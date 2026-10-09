@@ -19,7 +19,7 @@ const HELP = `mc - control the MasterChief crew
   mc spawn --mission <id> --kind ship|sentinel --title <text> [--harness <name>] [--tier small]
            [--model <m>] [--effort <e>] [--brief <text|@file>] [--permission-mode <m>]
   mc status [<task|agent>] [--lines <n>]
-  mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter]
+  mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter] [--force]
   mc finding add --mission <id> --claim <t> --evidence <t> --confidence <0-1> | mc finding list --mission <id>
   mc review <task|agent> --verdict approve|reject|escalate --notes <why>
   mc land <task|agent> [--title <t>] [--body <b>]
@@ -129,9 +129,9 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
         const { values, positionals } = parseArgs({
           args: rest,
           allowPositionals: true,
-          options: { text: { type: 'string' }, keys: { type: 'string' }, interrupt: { type: 'boolean' }, 'no-enter': { type: 'boolean' } },
+          options: { text: { type: 'string' }, keys: { type: 'string' }, interrupt: { type: 'boolean' }, 'no-enter': { type: 'boolean' }, force: { type: 'boolean' } },
         });
-        print(await mc.send(need(positionals[0], 'task (positional)'), { text: values.text, keys: values.keys?.split(',').filter(Boolean), interrupt: values.interrupt, noEnter: values['no-enter'] }));
+        print(await mc.send(need(positionals[0], 'task (positional)'), { text: values.text, keys: values.keys?.split(',').filter(Boolean), interrupt: values.interrupt, noEnter: values['no-enter'], force: values.force }));
         return 0;
       }
 

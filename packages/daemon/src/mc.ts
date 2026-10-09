@@ -62,6 +62,8 @@ export interface SpawnOptions {
 
 export interface SendOptions {
   text?: string;
+  /** Type even if the agent is waiting at a prompt or its input box holds a draft. */
+  force?: boolean;
   keys?: string[];
   interrupt?: boolean;
   /** Paste text without pressing Enter. */
@@ -583,12 +585,31 @@ export class Mc {
     return this.sendToAgent(this.agentOf(this.findTask(ref)), o);
   }
 
+  /**
+   * Typing and pressing Enter into a permission prompt would answer it, and into a draft would
+   * corrupt it. So text goes in only when the agent is not waiting and its input box is empty.
+   */
+  async requireReadyToType(agent: Agent): Promise<void> {
+    if (!agent.endpoint) throw new McError(`agent is not running: ${agent.id}`);
+    const verdict = await this.verdict(agent);
+    if (verdict.state === 'waiting') {
+      throw new McError(`${agent.id} is waiting at a prompt, and typing would answer it. Read its screen with mc status, or use --force`);
+    }
+    const harness = this.harness(agent.harness);
+    if (!harness.composerState) return;
+    const state = harness.composerState(await this.d.tmux.capture(agent.endpoint, 25));
+    if (state !== 'empty') {
+      throw new McError(`${agent.id}'s input box is ${state === 'typing' ? 'not empty (someone is typing or a dialog is open)' : 'not readable'}, so nothing was typed. Try again shortly, or use --force`);
+    }
+  }
+
   /** Type into a running agent's terminal. */
   async sendToAgent(agent: Agent, o: SendOptions): Promise<{ ok: true }> {
     if (!agent.endpoint || agent.state === 'retired') throw new McError(`agent is not running: ${agent.id}`);
     const status = await this.d.tmux.status(agent.endpoint);
     if (status !== 'alive') throw new McError(`agent endpoint is ${status}: ${agent.id}`);
     if (o.text === undefined && !o.keys?.length && !o.interrupt) throw new McError('nothing to send');
+    if (o.text !== undefined && !o.force) await this.requireReadyToType(agent);
     if (o.interrupt) await this.d.tmux.sendKeys(agent.endpoint, ...this.harness(agent.harness).interruptKeys);
     if (o.keys?.length) await this.d.tmux.sendKeys(agent.endpoint, ...o.keys);
     if (o.text !== undefined) {

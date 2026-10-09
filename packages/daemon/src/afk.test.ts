@@ -151,7 +151,9 @@ test('while away the Commander is not nudged; on return it gets one pointer and 
   expect(brief.text).toContain('Nothing needs a decision.');
   await waitFor(async () => (await tmux.capture(ep, 80)).includes('[mc afk-return] 1 item(s) queued'));
   expect(store.listAfkItems()).toEqual([]);
-  expect(mc.afk.brief({ last: true })).toEqual(brief);
+  const { pointerSent, ...stored } = brief;
+  expect(pointerSent).toBe(true);
+  expect(mc.afk.brief({ last: true })).toEqual(stored);
   expect(() => mc.afk.brief()).not.toThrow();
 
   // The normal wake must not replay what the brief already covered.
@@ -200,3 +202,20 @@ test('the daemon loop triages in the background until aborted', async () => {
   await running;
   expect((await mc.lockStatus('afk.pid')).running).toBe(false);
 });
+
+test('on return the pointer is not typed over the captain, but the brief is still handed over', async () => {
+  const m = await setup();
+  const launch = await fakeHarness.prepare({ agentId: 'commander', role: 'commander', cwd: repo, stateDir: join(home, 'state'), initialPrompt: 'start' });
+  const ep = await tmux.create({ name: 'commander', cwd: repo, command: launch.command, env: launch.env });
+  store.createAgent({ id: 'commander', role: 'commander', harness: 'fake', endpoint: ep, gen: launch.gen, hookLog: launch.hookLog });
+  await waitFor(async () => (await mc.verdict(store.getAgent('commander')!)).state === 'idle');
+  await mc.afk.start();
+  store.addEvent({ missionId: m.id, agentId: 'pilot-x', kind: 'dead', payload: { role: 'pilot' } });
+  await tmux.sendText(ep, 'draft: typing as the captain returns');
+  await waitFor(async () => (await tmux.capture(ep, 30)).includes('draft: typing as the captain returns'));
+  const brief = await mc.afk.stop();
+  expect(brief.pointerSent).toBe(false);
+  expect(brief.needsYou).toHaveLength(1);
+  expect(await tmux.capture(ep, 30)).not.toContain('[mc afk-return]');
+  expect(mc.afk.brief({ last: true }).needsYou).toHaveLength(1);
+}, 20_000);

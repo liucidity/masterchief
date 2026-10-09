@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { classifyAgent, lastHookEvent } from './busy.js';
-import { claudeHarness, registerClaudeTrust } from './claude.js';
+import { claudeComposerState, claudeHarness, registerClaudeTrust } from './claude.js';
 import { getHarness, listHarnesses } from './harness.js';
 
 let dir: string;
@@ -139,4 +139,29 @@ test('a long hook log is read from its tail without mistaking a cut line for an 
   // The final line is cut so only a fragment of an event name remains at the very end of a read window.
   await writeFile(l.hookLog!, lines.slice(0, 3000).join('\n') + `\n${l.gen} 5000 sto`);
   expect(await lastHookEvent(l.hookLog!, l.gen)).toEqual({ event: 'working', ts: 2 + 2998 });
+});
+
+const RULE = '─'.repeat(80);
+const SCREEN = (box: string) =>
+  ['❯ Captain here. Please do the thing.', '', '● On it.', '', '✻ Churned for 3s', '', RULE, box, RULE, '  Haiku 4.5 | [██░░░░░░░░] 19% ctx', '  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents'].join('\n');
+
+test('the input box is read from between the last two rules, ignoring earlier prompts in the transcript', () => {
+  expect(claudeComposerState(SCREEN('❯ '))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯'))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯ half a sentence'))).toBe('typing');
+  expect(claudeComposerState(SCREEN('❯ first line\n  second line'))).toBe('typing');
+  expect(claudeComposerState(SCREEN('❯ Try "how do I log an error?"'))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯ [Pasted text #1 +4 lines]'))).toBe('typing');
+});
+
+test('a dialog or an unfamiliar screen is never read as an empty box', () => {
+  const dialog = [
+    '● Fetch(https://example.com)', '', RULE, ' Fetch', ' Claude wants to fetch content from example.com', '╌'.repeat(80),
+    ' url: https://example.com/', '╌'.repeat(80), ' Do you want to allow Claude to fetch this content?', ' ❯ 1. Yes', '   2. Yes, and don\'t ask again for example.com', '   3. No, and tell Claude what to do differently (esc)',
+  ].join('\n');
+  expect(claudeComposerState(dialog)).toBe('unknown');
+  expect(claudeComposerState('just some output\nwith no box')).toBe('unknown');
+  expect(claudeComposerState('')).toBe('unknown');
+  const framedDialog = [RULE, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', RULE, ' Esc to cancel'].join('\n');
+  expect(claudeComposerState(framedDialog)).toBe('typing');
 });

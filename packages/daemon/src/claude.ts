@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { registerHarness, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
+import { registerHarness, type ComposerState, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
 
 /** Tools a crew member may use without asking. The guard hook still screens every call. */
 export const CREW_TOOLS = ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
@@ -54,6 +54,25 @@ export function claudeHookSettings(log: string, gen: string, guard?: string[]): 
   return { hooks };
 }
 
+/**
+ * Claude draws its input box between two full-width rules, with a prompt marker on the first
+ * line. A dialog has no such box, so anything unexpected reads as not ready. The empty-session
+ * placeholder suggestion counts as empty.
+ */
+export function claudeComposerState(screen: string): ComposerState {
+  const lines = screen.split('\n');
+  const rules = lines.flatMap((l, i) => (/^─{8,}\s*$/.test(l) ? [i] : []));
+  if (rules.length < 2) return 'unknown';
+  const [top, bottom] = rules.slice(-2) as [number, number];
+  const box = lines
+    .slice(top + 1, bottom)
+    .map((l) => l.replace(/^\s*[❯>]\s?/, '').trim())
+    .join('\n')
+    .trim();
+  if (!box || /^Try ".*"$/.test(box)) return 'empty';
+  return 'typing';
+}
+
 function claudeConfigFile(): string {
   return join(process.env.CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json');
 }
@@ -85,6 +104,7 @@ export const claudeHarness: Harness = {
   id: 'claude',
   efforts: CLAUDE_EFFORTS,
   semanticBusy: true,
+  composerState: claudeComposerState,
   exitText: '/exit',
   interruptKeys: ['Escape'],
 
