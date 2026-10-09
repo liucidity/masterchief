@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { registerHarness, type ComposerState, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
@@ -77,27 +78,100 @@ function claudeConfigFile(): string {
   return join(process.env.CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json');
 }
 
+interface ClaudeConfig {
+  projects?: Record<string, Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface ConfigEditOptions {
+  attempts?: number;
+  /** Runs after the new file is written and before it is swapped in. Lets tests play a racing writer. */
+  onBeforeCommit?: () => Promise<void> | void;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * Mark directories as trusted so a fresh worktree does not stop at Claude's
- * interactive workspace-trust dialog, which an autonomous pane cannot answer.
- * Refuses to touch an explicit decline.
+ * Edit Claude's config file without losing a write made by Claude itself. Claude does not honour any
+ * lock of ours, so this is optimistic: read, change, write a temp file, and only swap it in if the
+ * original is untouched, otherwise start again from what Claude wrote. The file keeps its mode.
+ * Returns whether anything was written.
  */
-export async function registerClaudeTrust(dirs: string[], configFile = claudeConfigFile()): Promise<void> {
-  let config: { projects?: Record<string, Record<string, unknown>> } = {};
-  try {
-    config = JSON.parse(await readFile(configFile, 'utf8')) as typeof config;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+export async function editClaudeConfig(file: string, mutate: (config: ClaudeConfig) => boolean, opts: ConfigEditOptions = {}): Promise<boolean> {
+  const attempts = opts.attempts ?? 8;
+  const signature = (st: Stats | undefined) => (st ? `${st.ino}:${st.size}:${st.mtimeMs}` : 'missing');
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const before = await stat(file).catch(() => undefined);
+    let config: ClaudeConfig = {};
+    if (before) {
+      try {
+        config = JSON.parse(await readFile(file, 'utf8')) as ClaudeConfig;
+      } catch {
+        // Claude may be part way through a write. Never overwrite what we cannot read.
+        await sleep(25 * (attempt + 1));
+        continue;
+      }
+    }
+    if (!mutate(config)) return false;
+    await mkdir(dirname(file), { recursive: true });
+    const tmp = `${file}.mc-${process.pid}-${randomUUID().slice(0, 8)}`;
+    await writeFile(tmp, JSON.stringify(config, null, 2), { mode: before ? before.mode & 0o777 : 0o600 });
+    await opts.onBeforeCommit?.();
+    if (signature(await stat(file).catch(() => undefined)) !== signature(before)) {
+      await rm(tmp, { force: true });
+      continue;
+    }
+    await rename(tmp, file);
+    return true;
   }
-  config.projects ??= {};
-  for (const dir of dirs) {
-    const entry = (config.projects[dir] ??= {});
-    entry.hasTrustDialogAccepted = true;
-  }
-  await mkdir(dirname(configFile), { recursive: true });
-  const tmp = `${configFile}.mc-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, JSON.stringify(config, null, 2));
-  await rename(tmp, configFile);
+  throw new Error(`could not update ${file}: it kept changing or could not be read`);
+}
+
+/**
+ * Mark directories as trusted so a fresh worktree does not stop at Claude's interactive
+ * workspace-trust dialog, which an autonomous pane cannot answer. Skips the write when they
+ * are all trusted already.
+ */
+export async function registerClaudeTrust(dirs: string[], configFile = claudeConfigFile(), opts: ConfigEditOptions = {}): Promise<boolean> {
+  return editClaudeConfig(
+    configFile,
+    (config) => {
+      config.projects ??= {};
+      let changed = false;
+      for (const dir of dirs) {
+        const entry = (config.projects[dir] ??= {});
+        if (entry.hasTrustDialogAccepted !== true) {
+          entry.hasTrustDialogAccepted = true;
+          changed = true;
+        }
+      }
+      return changed;
+    },
+    opts,
+  );
+}
+
+/** Where MasterChief keeps agent worktrees; only entries under here are ever forgotten. */
+const OWN_WORKTREE = /\/\.mc\/wt\/[^/]+$/;
+
+/** Forget the trust entry for a worktree MasterChief made, once the worktree is gone. */
+export async function unregisterClaudeTrust(dirs: string[], configFile = claudeConfigFile(), opts: ConfigEditOptions = {}): Promise<boolean> {
+  const own = dirs.filter((d) => OWN_WORKTREE.test(d));
+  if (!own.length) return false;
+  return editClaudeConfig(
+    configFile,
+    (config) => {
+      let changed = false;
+      for (const dir of own) {
+        if (config.projects && dir in config.projects) {
+          delete config.projects[dir];
+          changed = true;
+        }
+      }
+      return changed;
+    },
+    opts,
+  );
 }
 
 export const claudeHarness: Harness = {
@@ -114,6 +188,10 @@ export const claudeHarness: Harness = {
       return `invalid effort for claude: ${effort} (use ${CLAUDE_EFFORTS.join(', ')})`;
     }
     return null;
+  },
+
+  async forget(opts) {
+    if (opts.trust !== false) await unregisterClaudeTrust([opts.cwd], opts.trust?.configFile);
   },
 
   async prepare(opts: HarnessPrepareOptions): Promise<HarnessLaunch> {

@@ -15,7 +15,8 @@ import type { SessionBackend } from './session-backend.js';
 import { Afk } from './afk.js';
 import { Cortana } from './cortana.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
-import { agentEnv } from './workspace.js';
+import { agentEnv, listStale } from './workspace.js';
+import { removeWorkspace } from './workspace.js';
 import type { WorktreeProvider } from './worktree-provider.js';
 
 export { McError };
@@ -31,6 +32,8 @@ export interface McDeps {
   harnessIds?: () => string[];
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
+  /** Default for the CLI trust store: leave it alone (false), use another config file, or the real one (unset). */
+  trust?: false | { configFile?: string };
   /** Opens another MasterChief home, for a second mate. The session names the tmux session its windows go in. */
   openHome?: (home: string, session: string) => Mc;
   /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
@@ -505,7 +508,7 @@ export class Mc {
               ...(role === 'sentinel' ? ['--report-dir', join(this.dataDir, task.id)] : []),
             ]
           : undefined,
-        trust: o.trust,
+        trust: o.trust ?? this.d.trust,
       });
       const env = agentEnv(ws, slot);
       await mkdir(env.TMPDIR!, { recursive: true });
@@ -524,6 +527,7 @@ export class Mc {
     } catch (err) {
       if (endpoint) await this.d.tmux.destroy(endpoint).catch(() => undefined);
       if (ws) await this.d.worktrees.release(project.path, ws).catch(() => undefined);
+      if (ws) await this.forgetTrust(harness, ws.worktreePath);
       if (this.store.getAgent(agentId)) this.store.updateAgent(agentId, { state: 'retired', slot: null, workspaceId: null });
       if (ws) this.store.deleteWorkspace(ws.id);
       this.store.setTaskStatus(task.id, 'failed');
@@ -626,6 +630,34 @@ export class Mc {
     return { ok: true };
   }
 
+  /** Drop the CLI's per-worktree trust entry. A failure here must never block cleanup. */
+  private async forgetTrust(harness: Harness, cwd: string): Promise<void> {
+    await harness.forget?.({ cwd, trust: this.d.trust }).catch(() => undefined);
+  }
+
+  /**
+   * Find worktrees left behind by agents that are no longer live, for example after a crash.
+   * Reports by default. With `apply` it removes the ones holding no unlanded work, and with
+   * `force` it removes those too.
+   */
+  async prune(o: { apply?: boolean; force?: boolean } = {}) {
+    const live = new Set(this.store.listAgents().filter((a) => a.state !== 'retired').map((a) => a.id));
+    const rows: { project: string; agent: string; path: string; branch: string; removed: boolean; unlanded: string[] }[] = [];
+    for (const project of this.store.listProjects()) {
+      for (const s of await listStale(project.path, live)) {
+        const ws: Workspace = { id: s.agentId, worktreePath: s.path, branch: s.branch, baseSha: '', access: s.branch ? 'rw' : 'ro' };
+        const unlanded = await this.unlandedWork(project, ws);
+        const removable = !!o.apply && (o.force || unlanded.length === 0);
+        if (removable) {
+          await removeWorkspace(project.path, ws);
+          for (const id of listHarnesses()) await this.forgetTrust(this.harness(id), s.path);
+        }
+        rows.push({ project: project.path, agent: s.agentId, path: s.path, branch: s.branch, removed: removable, unlanded });
+      }
+    }
+    return rows;
+  }
+
   /** Reasons a worktree still holds work that would be lost by removing it. */
   async unlandedWork(project: Project, ws: Workspace): Promise<string[]> {
     const reasons: string[] = [];
@@ -663,6 +695,7 @@ export class Mc {
     if (agent.endpoint) await this.d.tmux.destroy(agent.endpoint);
     if (ws) {
       await this.d.worktrees.release(project.path, ws);
+      await this.forgetTrust(this.harness(agent.harness), ws.worktreePath);
       this.store.updateAgent(agent.id, { workspaceId: null });
       this.store.deleteWorkspace(ws.id);
     }

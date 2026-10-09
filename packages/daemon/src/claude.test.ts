@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { classifyAgent, lastHookEvent } from './busy.js';
-import { claudeComposerState, claudeHarness, registerClaudeTrust } from './claude.js';
+import { chmod, stat } from 'node:fs/promises';
+import { claudeComposerState, claudeHarness, editClaudeConfig, registerClaudeTrust, unregisterClaudeTrust } from './claude.js';
 import { getHarness, listHarnesses } from './harness.js';
 
 let dir: string;
@@ -165,3 +166,74 @@ test('a dialog or an unfamiliar screen is never read as an empty box', () => {
   const framedDialog = [RULE, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', RULE, ' Esc to cancel'].join('\n');
   expect(claudeComposerState(framedDialog)).toBe('typing');
 });
+
+describe_config_edits();
+
+function describe_config_edits() {
+  const read = async (f: string) => JSON.parse(await readFile(f, 'utf8'));
+
+  test('a write by Claude during our edit is kept: we re-read and apply our change on top of it', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, JSON.stringify({ theme: 'dark', projects: { '/old': { x: 1 } } }));
+    let calls = 0;
+    const wrote = await registerClaudeTrust(['/new'], file, {
+      onBeforeCommit: async () => {
+        calls++;
+        if (calls === 1) await writeFile(file, JSON.stringify({ theme: 'light', numStartups: 7, projects: { '/old': { x: 1 }, '/claude-added': { y: 2 } } }));
+      },
+    });
+    expect(wrote).toBe(true);
+    expect(calls).toBe(2);
+    const c = await read(file);
+    expect(c).toMatchObject({ theme: 'light', numStartups: 7 });
+    expect(c.projects['/claude-added']).toEqual({ y: 2 });
+    expect(c.projects['/new'].hasTrustDialogAccepted).toBe(true);
+    expect((await readdirSafe(dir)).filter((n) => n.includes('.mc-'))).toEqual([]);
+  });
+
+  test('a file that never stops changing is reported, not overwritten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{"a":1}');
+    let n = 0;
+    await expect(
+      editClaudeConfig(file, (c) => ((c.b = 1), true), { attempts: 3, onBeforeCommit: () => writeFile(file, `{"a":${++n + 1}}`) }),
+    ).rejects.toThrow(/kept changing/);
+    expect(await read(file)).toEqual({ a: n + 1 });
+    expect((await readdirSafe(dir)).filter((x) => x.includes('.mc-'))).toEqual([]);
+  });
+
+  test('a file that cannot be parsed is never overwritten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{"half": ');
+    await expect(editClaudeConfig(file, () => true, { attempts: 2 })).rejects.toThrow(/could not be read/);
+    expect(await readFile(file, 'utf8')).toBe('{"half": ');
+  });
+
+  test('the file keeps its mode, a new one is private, and an already-trusted path writes nothing', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{}');
+    await chmod(file, 0o640);
+    await registerClaudeTrust(['/a'], file);
+    expect((await stat(file)).mode & 0o777).toBe(0o640);
+    const before = await stat(file);
+    expect(await registerClaudeTrust(['/a'], file)).toBe(false);
+    expect((await stat(file)).mtimeMs).toBe(before.mtimeMs);
+    const fresh = join(dir, 'new', '.claude.json');
+    await registerClaudeTrust(['/a'], fresh);
+    expect((await stat(fresh)).mode & 0o777).toBe(0o600);
+  });
+
+  test('only worktrees MasterChief made are forgotten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, JSON.stringify({ projects: { '/repo/.mc/wt/pilot-1': { hasTrustDialogAccepted: true }, '/repo/.mc/wt/pilot-2': {}, '/home/me/app': { hasTrustDialogAccepted: true } } }));
+    expect(await unregisterClaudeTrust(['/repo/.mc/wt/pilot-1', '/home/me/app', '/repo/.mc/wt/never-seen'], file)).toBe(true);
+    expect(Object.keys((await read(file)).projects).sort()).toEqual(['/home/me/app', '/repo/.mc/wt/pilot-2']);
+    expect(await unregisterClaudeTrust(['/repo/.mc/wt/pilot-1'], file)).toBe(false);
+    expect(await unregisterClaudeTrust(['/home/me/app'], file)).toBe(false);
+    expect(Object.keys((await read(file)).projects)).toContain('/home/me/app');
+  });
+}
+
+async function readdirSafe(d: string): Promise<string[]> {
+  return (await import('node:fs/promises')).readdir(d);
+}

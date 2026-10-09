@@ -60,6 +60,8 @@ export interface Harness {
    * when this says `empty`. Harnesses without it are treated as always ready.
    */
   composerState?(screen: string): ComposerState;
+  /** Undo per-worktree setup, such as trust entries, once the worktree is gone. */
+  forget?(opts: { cwd: string; trust?: false | { configFile?: string } }): Promise<void>;
   /** Text typed to leave the CLI cleanly. */
   exitText: string;
   /** Keys that interrupt the current turn. */

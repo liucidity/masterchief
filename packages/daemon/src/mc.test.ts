@@ -239,3 +239,68 @@ test('text is refused while the agent waits at a prompt or has a draft, but keys
   await mc.send(r.agentId, { text: 'forced', force: true });
   await waitFor(async () => (await screen(r.agentId)).includes('got: forced'));
 }, 20_000);
+
+describe_lifecycle();
+
+function describe_lifecycle() {
+  const forgotten: string[] = [];
+  const withForget = () => ({ ...fakeHarness, forget: async (o: { cwd: string }) => void forgotten.push(o.cwd) });
+  const rebuild = () => {
+    forgotten.length = 0;
+    mc = new Mc({ store, tmux, worktrees: freshWorktrees, home, enterDelayMs: 20, harnessFor: () => withForget() });
+  };
+
+  test('teardown and a failed spawn both forget the worktree trust entry', async () => {
+    rebuild();
+    const { mission } = await setup();
+    const r = await spawn(mission.id);
+    await mc.teardown(r.agentId);
+    expect(forgotten).toEqual([r.worktree]);
+
+    forgotten.length = 0;
+    mc = new Mc({ store, tmux, worktrees: freshWorktrees, home, harnessFor: () => ({ ...withForget(), prepare: async () => { throw new Error('boom'); } }) });
+    await expect(spawn(mission.id)).rejects.toThrow('boom');
+    // Trust may have been registered before the failure, so rollback always asks to forget it.
+    expect(forgotten).toHaveLength(1);
+    expect(forgotten[0]).toMatch(/\/\.mc\/wt\/pilot-[0-9a-f]{4}$/);
+  });
+
+  test('a failure while forgetting trust never blocks cleanup', async () => {
+    mc = new Mc({ store, tmux, worktrees: freshWorktrees, home, enterDelayMs: 20, harnessFor: () => ({ ...fakeHarness, forget: async () => { throw new Error('config locked'); } }) });
+    const { mission } = await setup();
+    const r = await spawn(mission.id);
+    await mc.teardown(r.agentId);
+    expect(existsSync(r.worktree)).toBe(false);
+  });
+
+  test('prune reports stale worktrees, removes clean ones on --apply, and keeps ones with unlanded work unless forced', async () => {
+    rebuild();
+    const { mission } = await setup();
+    const live = await spawn(mission.id);
+    const clean = await spawn(mission.id);
+    const dirty = await spawn(mission.id);
+    await writeFile(join(dirty.worktree, 'wip.txt'), 'x');
+    // A crash left two agents retired in the database but their worktrees on disk.
+    store.updateAgent(clean.agentId, { state: 'retired', slot: null });
+    store.updateAgent(dirty.agentId, { state: 'retired', slot: null });
+
+    const report = await mc.prune();
+    expect(report.map((r) => [r.agent, r.removed]).sort()).toEqual([[clean.agentId, false], [dirty.agentId, false]].sort());
+    expect(report.find((r) => r.agent === dirty.agentId)!.unlanded[0]).toMatch(/uncommitted/);
+    expect(existsSync(clean.worktree)).toBe(true);
+
+    const applied = await mc.prune({ apply: true });
+    expect(applied.find((r) => r.agent === clean.agentId)!.removed).toBe(true);
+    expect(applied.find((r) => r.agent === dirty.agentId)!.removed).toBe(false);
+    expect(existsSync(clean.worktree)).toBe(false);
+    expect(existsSync(dirty.worktree)).toBe(true);
+    expect(existsSync(live.worktree)).toBe(true);
+    expect(forgotten).toContain(clean.worktree);
+
+    const forced = await mc.prune({ apply: true, force: true });
+    expect(forced.map((r) => r.agent)).toEqual([dirty.agentId]);
+    expect(existsSync(dirty.worktree)).toBe(false);
+    expect(existsSync(live.worktree)).toBe(true);
+    expect(await mc.prune()).toEqual([]);
+  });
+}

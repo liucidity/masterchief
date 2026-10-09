@@ -35,6 +35,7 @@ const HELP = `mc - control the MasterChief crew
   mc cortana list | start <id> [--fresh] | send <id> --text <t> | status <id> | sync <id>
   mc cortana teardown <id> [--force] [--purge]
   mc dispatch [--init]
+  mc prune [--apply] [--force]
   mc harnesses
 
 Every command prints JSON. Errors go to stderr with exit code 1.`;
@@ -49,7 +50,7 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
 };
 
 /** Every top-level command, for checks that documentation mentions only real ones. */
-export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'cortana', 'afk', 'attach', 'harnesses', 'help'];
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'prune', 'watch', 'commander', 'cortana', 'afk', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -296,6 +297,12 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       case 'dispatch': {
         const { values } = parseArgs({ args: rest, options: { init: { type: 'boolean' } } });
         print(values.init ? await mc.dispatchInit() : await mc.dispatchInfo());
+        return 0;
+      }
+
+      case 'prune': {
+        const { values } = parseArgs({ args: rest, options: { apply: { type: 'boolean' }, force: { type: 'boolean' } } });
+        print(await mc.prune({ apply: values.apply, force: values.force }));
         return 0;
       }
 

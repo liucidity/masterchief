@@ -27,6 +27,7 @@ export interface SessionBackend {
   capture(endpoint: string, lines?: number): Promise<string>;
   /** Dead means the window exists but its process has exited; missing means no window. */
   status(endpoint: string): Promise<EndpointStatus>;
+  /** Close the window and wait for its program to exit. Safe to call on a missing endpoint. */
   destroy(endpoint: string): Promise<void>;
   list(): Promise<SessionInfo[]>;
   /** Command line that attaches a human's terminal to an endpoint, when the backend supports it. */
