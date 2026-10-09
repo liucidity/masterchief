@@ -15,11 +15,14 @@ const HELP = `mc - control the MasterChief crew
   mc project add <path> [--mode direct-pr|no-mistakes|local-only]
   mc project list
   mc mission new --project <id|path> --type build|investigate --goal <text>
-  mc mission list | mc mission show <id>
+  mc mission list | mc mission show <id> | mc mission finish <id> [--abort]
   mc spawn --mission <id> --kind ship|sentinel --title <text> [--harness <name>] [--tier small]
            [--model <m>] [--effort <e>] [--brief <text|@file>] [--permission-mode <m>]
   mc status [<task|agent>] [--lines <n>]
   mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter]
+  mc finding add --mission <id> --claim <t> --evidence <t> --confidence <0-1> | mc finding list --mission <id>
+  mc review <task|agent> --verdict approve|reject|escalate --notes <why>
+  mc land <task|agent> [--title <t>] [--body <b>]
   mc teardown <task|agent> [--force] [--outcome done|failed]
   mc events [--after <seq>] [--peek] [--mission <id>]
   mc watch [--interval <ms>] [--once] [--unknown-after <s>] [--stale-after <s>]
@@ -42,7 +45,7 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
 };
 
 /** Every top-level command, for checks that documentation mentions only real ones. */
-export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'dispatch', 'watch', 'commander', 'attach', 'harnesses', 'help'];
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -76,6 +79,11 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
           return 0;
         }
         if (sub === 'list') return (print(mc.listMissions()), 0);
+        if (sub === 'finish') {
+          const { values, positionals } = parseArgs({ args: a, allowPositionals: true, options: { abort: { type: 'boolean' } } });
+          print(mc.finishMission(need(positionals[0], 'mission id'), { abort: values.abort }));
+          return 0;
+        }
         if (sub === 'show') {
           print(mc.showMission(need(a[0], 'mission id')));
           return 0;
@@ -120,6 +128,29 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
           options: { text: { type: 'string' }, keys: { type: 'string' }, interrupt: { type: 'boolean' }, 'no-enter': { type: 'boolean' } },
         });
         print(await mc.send(need(positionals[0], 'task (positional)'), { text: values.text, keys: values.keys?.split(',').filter(Boolean), interrupt: values.interrupt, noEnter: values['no-enter'] }));
+        return 0;
+      }
+
+      case 'finding': {
+        const [sub, ...a] = rest;
+        const { values } = parseArgs({ args: a, options: { mission: { type: 'string' }, claim: { type: 'string' }, evidence: { type: 'string' }, confidence: { type: 'string' } } });
+        if (sub === 'list') return (print(mc.listFindings(need(values.mission, 'mission'))), 0);
+        if (sub === 'add') {
+          print(mc.addFinding({ mission: need(values.mission, 'mission'), claim: need(values.claim, 'claim'), evidence: need(values.evidence, 'evidence'), confidence: Number(need(values.confidence, 'confidence')) }));
+          return 0;
+        }
+        throw new McError('usage: mc finding add|list');
+      }
+
+      case 'review': {
+        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { verdict: { type: 'string' }, notes: { type: 'string' } } });
+        print(mc.review(need(positionals[0], 'task (positional)'), { verdict: oneOf(values.verdict, 'verdict', ['approve', 'reject', 'escalate'] as const), notes: need(values.notes, 'notes') }));
+        return 0;
+      }
+
+      case 'land': {
+        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { title: { type: 'string' }, body: { type: 'string' } } });
+        print(await mc.land(need(positionals[0], 'task (positional)'), { title: values.title, body: values.body }));
         return 0;
       }
 

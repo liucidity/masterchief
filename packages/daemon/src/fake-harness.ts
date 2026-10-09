@@ -25,7 +25,7 @@ export const fakeHarness: Harness = {
     const hookLog = hookLogPath(opts.stateDir, opts.agentId);
     const script = [
       `ev() { printf '%s %s %s\\n' '${gen}' "$(date +%s)" "$1" >> '${hookLog}'; }`,
-      `turn() { ev prompt; case "$1" in slow*) sleep 1.5;; hang*) sleep 60;; esac; echo "got: $1"; ev stop; }`,
+      `turn() { ev prompt; case "$1" in slow*) sleep 1.5;; hang*) sleep 60;; "do: "*) sh -c "${'$'}{1#do: }";; esac; echo "got: $1"; ev stop; }`,
       `echo ready`,
       `if [ -n "$MC_FIRST" ]; then turn "$MC_FIRST"; fi`,
       `while IFS= read -r line; do turn "$line"; done`,

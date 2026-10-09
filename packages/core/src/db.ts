@@ -57,6 +57,7 @@ const MIGRATIONS = [
    ALTER TABLE agent ADD COLUMN hook_log TEXT;
    ALTER TABLE agent ADD COLUMN slot INTEGER;`,
   `CREATE UNIQUE INDEX agent_slot_unique ON agent(slot) WHERE slot IS NOT NULL;`,
+  `ALTER TABLE review ADD COLUMN task_id TEXT REFERENCES task(id);`,
 ];
 
 export function openDb(path = ':memory:'): DatabaseSync {

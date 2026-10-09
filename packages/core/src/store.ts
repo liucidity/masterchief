@@ -74,6 +74,7 @@ const toWorkspace = (r: Row): Workspace => ({
 const toReview = (r: Row): Review => ({
   id: r.id as string,
   missionId: r.mission_id as string,
+  taskId: r.task_id as string | null,
   by: r.by as Review['by'],
   verdict: r.verdict as Review['verdict'],
   notes: r.notes as string,
@@ -302,12 +303,19 @@ export class Store {
     this.db.prepare('DELETE FROM workspace WHERE id = ?').run(id);
   }
 
-  addReview(r: Omit<Review, 'id'>): Review {
+  addReview(r: Omit<Review, 'id' | 'taskId'> & { taskId?: string | null }): Review {
     const id = randomUUID();
+    const taskId = r.taskId ?? null;
     this.db
-      .prepare('INSERT INTO review (id, mission_id, by, verdict, notes) VALUES (?,?,?,?,?)')
-      .run(id, r.missionId, r.by, r.verdict, r.notes);
-    return { id, ...r };
+      .prepare('INSERT INTO review (id, mission_id, task_id, by, verdict, notes) VALUES (?,?,?,?,?,?)')
+      .run(id, r.missionId, taskId, r.by, r.verdict, r.notes);
+    return { id, ...r, taskId };
+  }
+
+  /** The most recent verdict about a task, from anyone. */
+  latestReview(taskId: string): Review | undefined {
+    const r = this.db.prepare('SELECT * FROM review WHERE task_id = ? ORDER BY rowid DESC LIMIT 1').get(taskId);
+    return r ? toReview(r) : undefined;
   }
 
   listReviews(missionId: string): Review[] {

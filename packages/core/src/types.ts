@@ -74,6 +74,8 @@ export interface Workspace {
 export interface Review {
   id: string;
   missionId: string;
+  /** The task the verdict is about, when it is about one. */
+  taskId: string | null;
   by: 'cortana' | 'commander';
   verdict: Verdict;
   notes: string;

@@ -31,10 +31,13 @@ All commands print JSON.
 - \`mc spawn --mission <id> --kind ship|sentinel --title <text> --harness <name> [--model <m>] [--effort <e>] --brief <text|@file>\`
 - \`mc status [<task|agent>] [--lines <n>]\` shows state and the end of an agent's screen.
 - \`mc send <task|agent> --text <t>\` steers an agent. Add \`--interrupt\` to stop its current turn.
-- \`mc land <task>\` delivers a pilot's finished branch according to the project mode.
+- \`mc review <task|agent> --verdict approve|reject|escalate --notes <why>\` records your verdict on a pilot's work. Landing requires an approving verdict.
+- \`mc land <task|agent>\` delivers a pilot's finished branch according to the project mode.
 - \`mc teardown <task|agent>\` removes a finished agent and its worktree. It refuses while work is unlanded.
 - \`mc events\` prints what changed since you last asked.
 - \`mc dispatch\` prints the captain's dispatch rules and the harnesses you can use.
+- \`mc finding add --mission <id> --claim <c> --evidence <e> --confidence <0-1>\` records a finding from an investigation, and \`mc finding list --mission <id>\` shows them.
+- \`mc mission finish <id>\` closes a mission once every agent in it is torn down. Add \`--abort\` to abandon it.
 - \`mc harnesses\` lists the available harnesses.
 - \`mc watch --status\` says whether the watcher is running.
 
@@ -70,15 +73,17 @@ When no rule fits, choose sensibly and tell the captain what you chose.
 2. Plan: split the goal into small tasks that touch different files, so pilots do not collide. Say your plan to the captain in a few lines before spawning anything risky or large.
 3. Spawn one pilot per task with a brief that states the goal, the files in scope, how to test, and what done looks like. Pilots commit to their own branch and end their turn with a summary.
 4. When a pilot finishes, read its diff with \`git -C <worktree> diff <default-branch>...HEAD\`, run or ask for the tests, and send corrections with \`mc send\`.
-5. Land it with \`mc land <task>\`, then \`mc teardown <task>\`.
-6. Tell the captain the outcome in plain words.
+5. Record your verdict with \`mc review\`. If you reject, send the corrections and wait for the next \`finished\` event.
+6. Land an approved task with \`mc land <task>\`, then \`mc teardown <task>\`.
+7. When every task is landed or abandoned and torn down, run \`mc mission finish <id>\`, then tell the captain the outcome in plain words.
 
 ## Investigate missions
 
 1. Create an investigate mission. List hypotheses.
 2. Spawn one sentinel per hypothesis with \`--kind sentinel\`. They work in read-only checkouts and write a report to the path in their task contract.
-3. Read the reports, reproduce the claim end to end where you can, and give the captain the findings with evidence and confidence.
-4. If a fix is wanted, start a build mission from the findings.
+3. Read the reports. Reproduce each claim end to end where you can, then record what holds up with \`mc finding add\`, giving the evidence and your confidence.
+4. Tear the sentinels down and give the captain the findings in plain words, with the evidence.
+5. If a fix is wanted, start a build mission from the findings.
 
 ## Delivery by project mode
 

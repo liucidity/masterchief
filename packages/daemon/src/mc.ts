@@ -1,4 +1,5 @@
-import { spawn as spawnProcess } from 'node:child_process';
+import { execFile, spawn as spawnProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { chmod, open as openFile } from 'node:fs/promises';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -32,6 +33,8 @@ export interface McDeps {
   cliPath?: string;
   /** Path to the compiled guard entrypoint. Crew members run it before every tool call. */
   guardPath?: string;
+  /** GitHub CLI used to open pull requests. Defaults to gh. */
+  ghCommand?: string;
   /** Extra environment for every agent, such as the tmux socket name. */
   extraEnv?: Record<string, string>;
 }
@@ -61,6 +64,7 @@ export interface SendOptions {
   noEnter?: boolean;
 }
 
+const run = promisify(execFile);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const TERMINAL_TASK = new Set(['done', 'failed']);
 
@@ -562,7 +566,14 @@ export class Mc {
         () => 'HEAD',
       );
       const ahead = await git(project.path, 'rev-list', '--count', `${base}..${ws.branch}`).catch(() => '0');
-      if (Number(ahead) > 0) reasons.push(`${ahead} commit(s) on ${ws.branch} not in ${base}`);
+      if (Number(ahead) > 0) {
+        // Work that is safely on the remote is not lost by removing the worktree.
+        const pushed = await git(project.path, 'merge-base', '--is-ancestor', ws.branch, `origin/${ws.branch}`).then(
+          () => true,
+          () => false,
+        );
+        if (!pushed) reasons.push(`${ahead} commit(s) on ${ws.branch} not in ${base} and not pushed`);
+      }
     }
     return reasons;
   }
@@ -588,6 +599,101 @@ export class Mc {
     if (!TERMINAL_TASK.has(task.status)) this.store.setTaskStatus(task.id, o.outcome ?? 'done');
     this.store.addEvent({ missionId: mission.id, agentId: agent.id, kind: 'teardown', payload: { taskId: task.id, forced: !!o.force } });
     return { ok: true, agent: agent.id };
+  }
+
+  // ---- review, landing and finishing -----------------------------------------
+
+  /** Record the Commander's verdict on a pilot's work. Landing requires an approving verdict. */
+  review(ref: string, o: { verdict: 'approve' | 'reject' | 'escalate'; notes: string }) {
+    const task = this.findTask(ref);
+    if (task.kind !== 'ship') throw new McError('only ship tasks are reviewed; record sentinel conclusions with mc finding');
+    if (!o.notes.trim()) throw new McError('a review needs notes saying why');
+    return this.store.addReview({ missionId: task.missionId, taskId: task.id, by: 'commander', verdict: o.verdict, notes: o.notes });
+  }
+
+  /** Deliver a pilot's branch according to its task's delivery mode. */
+  async land(ref: string, o: { title?: string; body?: string } = {}) {
+    const task = this.findTask(ref);
+    if (task.kind !== 'ship') throw new McError('only ship tasks can be landed');
+    const agent = this.agentOf(task);
+    const ws = agent.workspaceId ? this.store.getWorkspace(agent.workspaceId) : undefined;
+    if (!ws || agent.state === 'retired') throw new McError(`nothing to land: ${agent.id} has no worktree`);
+    const mission = this.store.getMission(task.missionId)!;
+    const project = this.store.getProject(mission.projectId)!;
+    const base = project.defaultBranch;
+
+    if (await git(ws.worktreePath, 'status', '--porcelain')) {
+      throw new McError(`${agent.id} has uncommitted changes: ask it to commit first`);
+    }
+    const ahead = Number(await git(project.path, 'rev-list', '--count', `${base}..${ws.branch}`));
+    if (ahead === 0) throw new McError(`nothing to land: ${ws.branch} has no commits beyond ${base}`);
+    const verdict = this.store.latestReview(task.id);
+    if (verdict?.verdict !== 'approve') {
+      throw new McError(`review required before landing: run mc review ${agent.id} --verdict approve --notes <why> (latest verdict: ${verdict?.verdict ?? 'none'})`);
+    }
+
+    if (task.deliveryMode === 'local-only') {
+      const current = await git(project.path, 'rev-parse', '--abbrev-ref', 'HEAD');
+      if (current !== base) throw new McError(`the project checkout is on ${current}, not ${base}: the captain must switch it before a local landing`);
+      if (await git(project.path, 'status', '--porcelain', '--untracked-files=no')) {
+        throw new McError('the project checkout has uncommitted changes: the captain must clean it before a local landing');
+      }
+      try {
+        await git(project.path, 'merge', '--ff-only', ws.branch);
+      } catch {
+        throw new McError(`cannot fast-forward ${base} to ${ws.branch}: ${base} has moved. Ask the pilot to rebase onto ${base} and run the tests again`);
+      }
+      const sha = await git(project.path, 'rev-parse', 'HEAD');
+      this.store.addEvent({ missionId: mission.id, agentId: agent.id, kind: 'landed', payload: { taskId: task.id, mode: 'local-only', sha } });
+      return { mode: 'local-only', branch: ws.branch, merged: true, sha };
+    }
+
+    if (!(await git(project.path, 'remote', 'get-url', 'origin').catch(() => ''))) {
+      throw new McError(`${project.path} has no origin remote, so a pull request cannot be opened`);
+    }
+    await git(ws.worktreePath, 'push', '-u', 'origin', ws.branch).catch((err: Error) => {
+      throw new McError(`push failed: ${err.message.split('\n').slice(-2).join(' ').trim()}`);
+    });
+    const title = o.title ?? task.title;
+    const body = o.body ?? `${mission.goal}\n\nTask: ${task.title}\n\nOpened by MasterChief (${agent.id}).`;
+    let pr: string;
+    try {
+      const { stdout } = await run(this.d.ghCommand ?? 'gh', ['pr', 'create', '--base', base, '--head', ws.branch, '--title', title, '--body', body], { cwd: ws.worktreePath });
+      pr = stdout.trim();
+    } catch (err) {
+      throw new McError(`the branch was pushed, but opening the pull request failed: ${String((err as Error).message).split('\n')[0]}`);
+    }
+    this.store.addEvent({ missionId: mission.id, agentId: agent.id, kind: 'landed', payload: { taskId: task.id, mode: task.deliveryMode, pr } });
+    return { mode: task.deliveryMode, branch: ws.branch, pushed: true, pr };
+  }
+
+  /** Record what held up from an investigation. */
+  addFinding(o: { mission: string; claim: string; evidence: string; confidence: number }) {
+    const mission = this.findMission(o.mission);
+    if (!o.claim.trim() || !o.evidence.trim()) throw new McError('a finding needs a claim and evidence');
+    if (!Number.isFinite(o.confidence) || o.confidence < 0 || o.confidence > 1) throw new McError('confidence must be a number from 0 to 1');
+    return this.store.addFinding({ missionId: mission.id, claim: o.claim, evidence: o.evidence, confidence: o.confidence });
+  }
+
+  listFindings(missionRef: string) {
+    return this.store.listFindings(this.findMission(missionRef).id);
+  }
+
+  /** Close out a mission once nothing in it is running. */
+  finishMission(ref: string, o: { abort?: boolean } = {}): Mission {
+    const mission = this.findMission(ref);
+    const live = this.store
+      .listTasks(mission.id)
+      .map((t) => (t.agentId ? this.store.getAgent(t.agentId) : undefined))
+      .filter((a): a is Agent => !!a && a.state !== 'retired');
+    if (live.length) throw new McError(`mission still has live agents: ${live.map((a) => a.id).join(', ')} (tear them down first)`);
+    const next = o.abort ? 'aborted' : 'done';
+    if (!o.abort) {
+      const open = this.store.listTasks(mission.id).filter((t) => !TERMINAL_TASK.has(t.status));
+      if (open.length) throw new McError(`mission has unfinished tasks: ${open.map((t) => t.id.slice(0, 8)).join(', ')} (or finish with --abort)`);
+    }
+    this.store.setMissionStatus(mission.id, next);
+    return this.store.getMission(mission.id)!;
   }
 
   /** New events since the last read. Reading advances the cursor unless `peek` is set. */

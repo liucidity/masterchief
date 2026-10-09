@@ -97,6 +97,7 @@ test('workspaces round trip and reviews, findings and events are ordered', () =>
 
   const m = store.createMission({ projectId: project().id, type: 'investigate', goal: 'g', branch: 'b', budget: null });
   store.addReview({ missionId: m.id, by: 'commander', verdict: 'approve', notes: 'ok' });
+  expect(store.listReviews(m.id)[0]!.taskId).toBeNull();
   store.addFinding({ missionId: m.id, claim: 'c', evidence: 'e', confidence: 0.5 });
   expect(store.listReviews(m.id)).toHaveLength(1);
   expect(store.listFindings(m.id)[0]).toMatchObject({ claim: 'c' });
@@ -160,4 +161,13 @@ test('agents remember their launch details and slots are reused after retirement
   expect(() => store.createAgent({ role: 'pilot', harness: 'claude', slot: 1 })).toThrow();
   store.updateAgent(b.id, { slot: null });
   expect(store.allocateSlot()).toBe(0);
+});
+
+test('the latest review of a task wins', () => {
+  const m = store.createMission({ projectId: project().id, type: 'build', goal: 'g', branch: 'b', budget: null });
+  const t = store.createTask({ missionId: m.id, title: 't', dependsOn: [] });
+  expect(store.latestReview(t.id)).toBeUndefined();
+  store.addReview({ missionId: m.id, taskId: t.id, by: 'commander', verdict: 'reject', notes: 'tests missing' });
+  store.addReview({ missionId: m.id, taskId: t.id, by: 'commander', verdict: 'approve', notes: 'fixed' });
+  expect(store.latestReview(t.id)).toMatchObject({ verdict: 'approve', notes: 'fixed', taskId: t.id });
 });
