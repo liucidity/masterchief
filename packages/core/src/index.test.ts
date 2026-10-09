@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from 'vitest';
+import { beforeEach, expect, onTestFinished, test } from 'vitest';
 import { openDb, Store } from './index.js';
 
 let store: Store;
@@ -127,10 +127,12 @@ test('cortana homes keep scope, projects and local route', () => {
 
 test('migration 2 upgrades a database created by migration 1', async () => {
   const { DatabaseSync } = await import('node:sqlite');
-  const { mkdtempSync } = await import('node:fs');
+  const { mkdtempSync, rmSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
-  const path = join(mkdtempSync(join(tmpdir(), 'mc-db-')), 'old.db');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-db-'));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'old.db');
   const old = new DatabaseSync(path);
   old.exec(`CREATE TABLE project (id TEXT PRIMARY KEY, path TEXT NOT NULL, default_branch TEXT NOT NULL, repo_url TEXT);
     CREATE TABLE mission (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES project(id), type TEXT NOT NULL, goal TEXT NOT NULL, status TEXT NOT NULL, branch TEXT NOT NULL, budget REAL);
