@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, Store } from '@masterchief/core';
 import { runCli } from './cli.js';
-import './claude.js';
+import './harnesses.js';
 import { Mc } from './mc.js';
 import { TmuxBackend } from './tmux.js';
 import { freshWorktrees } from './worktree-provider.js';

@@ -2,7 +2,7 @@ import { execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomBytes } from 'node:crypto';
 import { chmod, open as openFile } from 'node:fs/promises';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { Agent, DeliveryMode, Mission, MissionType, Project, Store, Task, TaskKind, Workspace } from '@masterchief/core';
 import { classifyAgent, type BusyVerdict } from './busy.js';
@@ -546,6 +546,10 @@ export class Mc {
     if (o.interrupt) await this.d.tmux.sendKeys(agent.endpoint, ...this.harness(agent.harness).interruptKeys);
     if (o.keys?.length) await this.d.tmux.sendKeys(agent.endpoint, ...o.keys);
     if (o.text !== undefined) {
+      const harness = this.harness(agent.harness);
+      if (harness.recordsSends && agent.hookLog && agent.gen) {
+        await appendFile(agent.hookLog, `${agent.gen} ${Math.floor(Date.now() / 1000)} prompt\n`);
+      }
       await this.d.tmux.sendText(agent.endpoint, o.text);
       if (!o.noEnter) {
         await sleep(this.d.enterDelayMs ?? 150);

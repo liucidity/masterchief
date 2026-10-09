@@ -39,6 +39,11 @@ export interface HarnessLaunch {
 /** A launch recipe for one coding CLI. It never talks to a model API. */
 export interface Harness {
   id: string;
+  /**
+   * True when the CLI cannot report that a turn started. MasterChief then writes the
+   * prompt event itself whenever it launches the agent with a brief or sends it text.
+   */
+  recordsSends?: boolean;
   /** Accepted effort values, or null when the CLI has no effort flag. */
   efforts: string[] | null;
   /** True when the CLI reports turn start and end through a machine-readable channel. */

@@ -205,3 +205,16 @@ test('with a guard path, crew members launch with a guard command scoped to thei
   expect(seen[0]).toEqual([process.execPath, '--disable-warning=ExperimentalWarning', '/opt/mc/guard-main.js', '--role', 'pilot', '--worktree', pilot.worktree]);
   expect(seen[1]).toEqual(expect.arrayContaining(['--role', 'sentinel', '--report-dir', join(home, 'data', sentinel.taskId)]));
 });
+
+test('for a harness that cannot report turn starts, mc records the prompt when it sends text', async () => {
+  const { lastHookEvent } = await import('./busy.js');
+  const quiet = { ...fakeHarness, id: 'quiet', recordsSends: true, prepare: async (o: Parameters<typeof fakeHarness.prepare>[0]) => ({ ...(await fakeHarness.prepare(o)), command: ['cat'] }) };
+  mc = new Mc({ store, tmux, worktrees: freshWorktrees, home, enterDelayMs: 20, harnessFor: () => quiet });
+  const { mission } = await setup();
+  const r = await spawn(mission.id);
+  const agent = store.getAgent(r.agentId)!;
+  expect(await lastHookEvent(agent.hookLog!, agent.gen!)).toBeUndefined();
+  await mc.send(r.agentId, { text: 'hello' });
+  expect(await lastHookEvent(agent.hookLog!, agent.gen!)).toMatchObject({ event: 'prompt' });
+  expect((await mc.status(r.agentId)).verdict).toMatchObject({ state: 'busy' });
+});
