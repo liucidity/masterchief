@@ -36,6 +36,9 @@ export interface HarnessLaunch {
   hookLog: string | null;
 }
 
+/** Whether it is safe to type into an agent: its input box is empty, holds a draft, or cannot be read. */
+export type ComposerState = 'empty' | 'typing' | 'unknown';
+
 /** A launch recipe for one coding CLI. It never talks to a model API. */
 export interface Harness {
   id: string;
@@ -51,6 +54,14 @@ export interface Harness {
   /** Returns an error message when the model or effort cannot be launched, otherwise null. */
   validate(model: string | null | undefined, effort: string | null | undefined): string | null;
   prepare(opts: HarnessPrepareOptions): Promise<HarnessLaunch>;
+  /**
+   * Read a screen capture and say whether the input box is empty. Typing into anything else, a
+   * draft or a dialog, would corrupt a person's input or answer a prompt, so text is only sent
+   * when this says `empty`. Harnesses without it are treated as always ready.
+   */
+  composerState?(screen: string): ComposerState;
+  /** Undo per-worktree setup, such as trust entries, once the worktree is gone. */
+  forget?(opts: { cwd: string; trust?: false | { configFile?: string } }): Promise<void>;
   /** Text typed to leave the CLI cleanly. */
   exitText: string;
   /** Keys that interrupt the current turn. */

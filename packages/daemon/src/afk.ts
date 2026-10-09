@@ -119,7 +119,14 @@ export class Afk {
         }
         return item('ready', false, `pilot ${agentId} finished${title}: ready for review`);
       case 'blocked':
-        return item('blocked', true, `${agentId} looks stuck (${String(p.reason ?? 'no signal')}), probably at a prompt`, String(p.tail ?? ''));
+        return item(
+          'blocked',
+          true,
+          p.reason === 'awaiting-input'
+            ? `${agentId} is waiting for input (a permission prompt or a question)${title}`
+            : `${agentId} looks stuck (${String(p.reason ?? 'no signal')}), probably at a prompt`,
+          String(p.tail ?? ''),
+        );
       case 'dead': {
         let extra = '';
         const agent = agentId ? this.store.getAgent(agentId) : undefined;
@@ -192,11 +199,23 @@ export class Afk {
     this.store.setAfkActive(false);
     // Everything up to now is covered by the brief, so the normal wake must not replay it.
     this.store.setSetting('wake_cursor', String(this.latestSeq()));
+    this.store.setSetting('events_cursor', String(this.latestSeq()));
     const commander = this.store.listAgents().find((a) => a.role === 'commander' && a.state !== 'retired' && a.endpoint);
+    let pointerSent = false;
     if (commander && items.length && (await this.mc.verdict(commander)).state === 'idle') {
-      await this.mc.sendToAgent(commander, { text: `[mc afk-return] ${items.length} item(s) queued while the captain was away, ${brief.needsYou.length} need a decision. Run: mc afk brief --last` });
+      const text = `[mc afk-return] ${items.length} item(s) queued while the captain was away, ${brief.needsYou.length} need a decision. Run: mc afk brief --last`;
+      // The captain has just come back and may be typing to the Commander, so ask politely and give up quietly.
+      for (let attempt = 0; attempt < 4 && !pointerSent; attempt++) {
+        try {
+          await this.mc.sendToAgent(commander, { text });
+          pointerSent = true;
+        } catch (err) {
+          if (!(err instanceof McError)) throw err;
+          await sleep(500);
+        }
+      }
     }
-    return brief;
+    return { ...brief, pointerSent };
   }
 
   /** The daemon loop. Holds a single-instance lock. */

@@ -86,3 +86,17 @@ test('PATH and other variables reach the program even though tmux ignores -e for
   expect(await tmux.capture(ep)).toContain('path=/my/shim/bin:/usr/bin:/bin');
   await expect(tmux.create({ name: 'bad', cwd: dir, env: { 'BAD NAME': '1' }, command: ['true'] })).rejects.toThrow(/invalid environment variable name/);
 });
+
+test('destroy waits for a slow-to-exit program, so its last writes happen before cleanup', async () => {
+  const marker = join(dir, 'exited');
+  const ep = await tmux.create({
+    name: 'slow-exit',
+    cwd: dir,
+    command: ['sh', '-c', `trap 'sleep 0.6; echo done > ${marker}; exit 0' HUP TERM; echo up; while :; do sleep 0.1; done`],
+  });
+  await waitFor(async () => (await tmux.capture(ep)).includes('up'));
+  await tmux.destroy(ep);
+  expect((await import('node:fs')).existsSync(marker)).toBe(true);
+  expect(await tmux.status(ep)).toBe('missing');
+  await tmux.destroy(ep); // a missing window is fine
+});

@@ -62,6 +62,23 @@ export async function removeWorkspace(repoPath: string, ws: Workspace): Promise<
   if (ws.branch) await git(repoPath, 'branch', '-D', ws.branch).catch(() => undefined);
 }
 
+/** Worktrees under .mc/wt whose agent is not live. Read-only. */
+export async function listStale(repoPath: string, liveAgentIds: Set<string>): Promise<{ agentId: string; path: string; branch: string }[]> {
+  const root = join(resolve(repoPath), WT_DIR) + '/';
+  const listing = await git(repoPath, 'worktree', 'list', '--porcelain');
+  const out: { agentId: string; path: string; branch: string }[] = [];
+  for (const block of listing.split('\n\n')) {
+    const lines = block.split('\n');
+    const path = lines.find((l) => l.startsWith('worktree '))?.slice(9);
+    if (!path?.startsWith(root)) continue;
+    const agentId = path.slice(root.length);
+    if (liveAgentIds.has(agentId)) continue;
+    const branch = lines.find((l) => l.startsWith('branch '))?.slice('branch refs/heads/'.length) ?? '';
+    out.push({ agentId, path, branch });
+  }
+  return out;
+}
+
 /**
  * Remove worktrees and mc/* branches whose agent is no longer known, and
  * prune registrations whose directory is gone. Returns the agent ids removed.

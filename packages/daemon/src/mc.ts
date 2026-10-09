@@ -15,7 +15,8 @@ import type { SessionBackend } from './session-backend.js';
 import { Afk } from './afk.js';
 import { Cortana } from './cortana.js';
 import { Watcher, type WatcherOptions } from './watcher.js';
-import { agentEnv } from './workspace.js';
+import { agentEnv, listStale } from './workspace.js';
+import { removeWorkspace } from './workspace.js';
 import type { WorktreeProvider } from './worktree-provider.js';
 
 export { McError };
@@ -31,6 +32,10 @@ export interface McDeps {
   harnessIds?: () => string[];
   /** Milliseconds between pasting text and pressing Enter. */
   enterDelayMs?: number;
+  /** Epoch seconds. Injectable for tests. */
+  now?: () => number;
+  /** Default for the CLI trust store: leave it alone (false), use another config file, or the real one (unset). */
+  trust?: false | { configFile?: string };
   /** Opens another MasterChief home, for a second mate. The session names the tmux session its windows go in. */
   openHome?: (home: string, session: string) => Mc;
   /** Path to the compiled mc entrypoint, used for the Commander's mc shim and the background watcher. */
@@ -62,6 +67,8 @@ export interface SpawnOptions {
 
 export interface SendOptions {
   text?: string;
+  /** Type even if the agent is waiting at a prompt or its input box holds a draft. */
+  force?: boolean;
   keys?: string[];
   interrupt?: boolean;
   /** Paste text without pressing Enter. */
@@ -503,7 +510,7 @@ export class Mc {
               ...(role === 'sentinel' ? ['--report-dir', join(this.dataDir, task.id)] : []),
             ]
           : undefined,
-        trust: o.trust,
+        trust: o.trust ?? this.d.trust,
       });
       const env = agentEnv(ws, slot);
       await mkdir(env.TMPDIR!, { recursive: true });
@@ -522,6 +529,7 @@ export class Mc {
     } catch (err) {
       if (endpoint) await this.d.tmux.destroy(endpoint).catch(() => undefined);
       if (ws) await this.d.worktrees.release(project.path, ws).catch(() => undefined);
+      if (ws) await this.forgetTrust(harness, ws.worktreePath);
       if (this.store.getAgent(agentId)) this.store.updateAgent(agentId, { state: 'retired', slot: null, workspaceId: null });
       if (ws) this.store.deleteWorkspace(ws.id);
       this.store.setTaskStatus(task.id, 'failed');
@@ -551,14 +559,38 @@ export class Mc {
 
   // ---- status / send / teardown / events -------------------------------------
 
-  /** Live agents with a task, in every mission. */
+  /** What, if anything, needs the Commander's attention about an agent, judged from its current state. */
+  private attention(agent: Agent, task: Task, verdict: BusyVerdict): string | null {
+    switch (verdict.state) {
+      case 'dead':
+        return 'exited: read its screen, then respawn the task or tell the captain';
+      case 'waiting':
+        return 'waiting for input: tell the captain what it is asking; do not answer it';
+      case 'unknown':
+        return `no signal (${verdict.source}): it may be at a dialog, so read its screen`;
+      case 'busy': {
+        const quiet = verdict.since !== undefined ? Math.floor(((this.d.now?.() ?? Date.now() / 1000) - verdict.since) / 60) : 0;
+        return quiet >= 30 ? `busy for ${quiet} minutes with no progress: read its screen` : null;
+      }
+      case 'idle': {
+        if (task.kind === 'sentinel') return 'finished: read its report, record findings, then tear it down';
+        const review = this.store.latestReview(task.id)?.verdict;
+        if (review === 'approve') return 'approved: land it with mc land, or send changes';
+        if (review === 'reject') return 'rejected earlier and now idle: check whether the corrections arrived, or tear it down';
+        return 'finished: review its diff, then mc review';
+      }
+    }
+  }
+
+  /** Live agents with a task, in every mission, each with an `attention` note when something is needed. */
   async fleet() {
     const rows = [];
     for (const m of this.store.listMissions()) {
       for (const task of this.store.listTasks(m.id)) {
         const agent = task.agentId ? this.store.getAgent(task.agentId) : undefined;
         if (!agent || agent.state === 'retired') continue;
-        rows.push({ mission: m.id, task: task.id, title: task.title, kind: task.kind, status: task.status, agent: agent.id, harness: agent.harness, verdict: await this.verdict(agent) });
+        const verdict = await this.verdict(agent);
+        rows.push({ mission: m.id, task: task.id, title: task.title, kind: task.kind, status: task.status, agent: agent.id, harness: agent.harness, verdict, attention: this.attention(agent, task, verdict) });
       }
     }
     return rows;
@@ -583,12 +615,31 @@ export class Mc {
     return this.sendToAgent(this.agentOf(this.findTask(ref)), o);
   }
 
+  /**
+   * Typing and pressing Enter into a permission prompt would answer it, and into a draft would
+   * corrupt it. So text goes in only when the agent is not waiting and its input box is empty.
+   */
+  async requireReadyToType(agent: Agent): Promise<void> {
+    if (!agent.endpoint) throw new McError(`agent is not running: ${agent.id}`);
+    const verdict = await this.verdict(agent);
+    if (verdict.state === 'waiting') {
+      throw new McError(`${agent.id} is waiting at a prompt, and typing would answer it. Read its screen with mc status, or use --force`);
+    }
+    const harness = this.harness(agent.harness);
+    if (!harness.composerState) return;
+    const state = harness.composerState(await this.d.tmux.capture(agent.endpoint, 25));
+    if (state !== 'empty') {
+      throw new McError(`${agent.id}'s input box is ${state === 'typing' ? 'not empty (someone is typing or a dialog is open)' : 'not readable'}, so nothing was typed. Try again shortly, or use --force`);
+    }
+  }
+
   /** Type into a running agent's terminal. */
   async sendToAgent(agent: Agent, o: SendOptions): Promise<{ ok: true }> {
     if (!agent.endpoint || agent.state === 'retired') throw new McError(`agent is not running: ${agent.id}`);
     const status = await this.d.tmux.status(agent.endpoint);
     if (status !== 'alive') throw new McError(`agent endpoint is ${status}: ${agent.id}`);
     if (o.text === undefined && !o.keys?.length && !o.interrupt) throw new McError('nothing to send');
+    if (o.text !== undefined && !o.force) await this.requireReadyToType(agent);
     if (o.interrupt) await this.d.tmux.sendKeys(agent.endpoint, ...this.harness(agent.harness).interruptKeys);
     if (o.keys?.length) await this.d.tmux.sendKeys(agent.endpoint, ...o.keys);
     if (o.text !== undefined) {
@@ -603,6 +654,34 @@ export class Mc {
       }
     }
     return { ok: true };
+  }
+
+  /** Drop the CLI's per-worktree trust entry. A failure here must never block cleanup. */
+  private async forgetTrust(harness: Harness, cwd: string): Promise<void> {
+    await harness.forget?.({ cwd, trust: this.d.trust }).catch(() => undefined);
+  }
+
+  /**
+   * Find worktrees left behind by agents that are no longer live, for example after a crash.
+   * Reports by default. With `apply` it removes the ones holding no unlanded work, and with
+   * `force` it removes those too.
+   */
+  async prune(o: { apply?: boolean; force?: boolean } = {}) {
+    const live = new Set(this.store.listAgents().filter((a) => a.state !== 'retired').map((a) => a.id));
+    const rows: { project: string; agent: string; path: string; branch: string; removed: boolean; unlanded: string[] }[] = [];
+    for (const project of this.store.listProjects()) {
+      for (const s of await listStale(project.path, live)) {
+        const ws: Workspace = { id: s.agentId, worktreePath: s.path, branch: s.branch, baseSha: '', access: s.branch ? 'rw' : 'ro' };
+        const unlanded = await this.unlandedWork(project, ws);
+        const removable = !!o.apply && (o.force || unlanded.length === 0);
+        if (removable) {
+          await removeWorkspace(project.path, ws);
+          for (const id of listHarnesses()) await this.forgetTrust(this.harness(id), s.path);
+        }
+        rows.push({ project: project.path, agent: s.agentId, path: s.path, branch: s.branch, removed: removable, unlanded });
+      }
+    }
+    return rows;
   }
 
   /** Reasons a worktree still holds work that would be lost by removing it. */
@@ -642,6 +721,7 @@ export class Mc {
     if (agent.endpoint) await this.d.tmux.destroy(agent.endpoint);
     if (ws) {
       await this.d.worktrees.release(project.path, ws);
+      await this.forgetTrust(this.harness(agent.harness), ws.worktreePath);
       this.store.updateAgent(agent.id, { workspaceId: null });
       this.store.deleteWorkspace(ws.id);
     }
@@ -746,14 +826,21 @@ export class Mc {
     return this.store.getMission(mission.id)!;
   }
 
-  /** New events since the last read. Reading advances the cursor unless `peek` is set. */
-  events(o: { after?: number; peek?: boolean; mission?: string } = {}) {
-    const cursor = o.after ?? Number(this.store.getSetting('events_cursor') ?? 0);
-    const events = this.store.listEvents({ afterSeq: cursor, missionId: o.mission ? this.findMission(o.mission).id : undefined });
-    if (!o.peek && o.after === undefined && events.length) {
-      this.store.setSetting('events_cursor', String(events[events.length - 1]!.seq));
+  /**
+   * Events the Commander has not acknowledged. Reading never moves the cursor, so a Commander that
+   * crashes mid-way is shown the same events again. `ack` commits everything up to a position.
+   */
+  events(o: { after?: number; ack?: number; mission?: string } = {}) {
+    const latest = this.store.listEvents().at(-1)?.seq ?? 0;
+    let cursor = Number(this.store.getSetting('events_cursor') ?? 0);
+    if (o.ack !== undefined) {
+      if (!Number.isInteger(o.ack) || o.ack < 0 || o.ack > latest) throw new McError(`cannot acknowledge ${o.ack}: the latest event is ${latest}`);
+      cursor = Math.max(cursor, o.ack);
+      this.store.setSetting('events_cursor', String(cursor));
     }
-    return events;
+    const events = this.store.listEvents({ afterSeq: o.after ?? cursor, missionId: o.mission ? this.findMission(o.mission).id : undefined });
+    const next = events.at(-1)?.seq ?? null;
+    return { acknowledged: cursor, events, next, ack: next === null ? null : `mc events --ack ${next}` };
   }
 
   async readBrief(arg: string): Promise<string> {

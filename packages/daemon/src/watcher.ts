@@ -1,4 +1,5 @@
 import type { Agent, Store, StoredEvent } from '@masterchief/core';
+import { McError } from './mc-error.js';
 import type { Mc } from './mc.js';
 import type { SessionBackend } from './session-backend.js';
 
@@ -7,6 +8,8 @@ export interface WatcherOptions {
   unknownAfterSecs?: number;
   /** A busy agent with no hook event for this long is reported as stale. */
   staleAfterSecs?: number;
+  /** Remind the Commander of events it has read but not acknowledged after this long. */
+  rewakeAfterSecs?: number;
   /** Epoch seconds. Injectable for tests. */
   now?: () => number;
 }
@@ -31,6 +34,7 @@ const TAIL_LINES = 15;
 export class Watcher {
   private unknownAfter: number;
   private staleAfter: number;
+  private rewakeAfter: number;
   private now: () => number;
 
   constructor(
@@ -41,6 +45,7 @@ export class Watcher {
   ) {
     this.unknownAfter = opts.unknownAfterSecs ?? 90;
     this.staleAfter = opts.staleAfterSecs ?? 1800;
+    this.rewakeAfter = opts.rewakeAfterSecs ?? 300;
     this.now = opts.now ?? (() => Math.floor(Date.now() / 1000));
   }
 
@@ -77,6 +82,8 @@ export class Watcher {
         this.store.updateAgent(agent.id, { state: verdict.state });
         if (verdict.state === 'idle' && agent.role !== 'commander') emit(agent, 'finished', { event: verdict.event });
         if (verdict.state === 'dead') emit(agent, 'dead', { reason: verdict.source, tail: await this.tail(agent) });
+        // A prompt or question is a definite signal that a person is needed, so there is nothing to wait out.
+        if (verdict.state === 'waiting') emit(agent, 'blocked', { reason: 'awaiting-input', tail: await this.tail(agent) });
       }
 
       if (verdict.state === 'unknown') {
@@ -108,22 +115,38 @@ export class Watcher {
     return emitted;
   }
 
-  /** Nudge the Commander with a short pointer, but only between its turns and never with task text. */
+  /**
+   * Nudge the Commander with a short pointer, but only between its turns and never with task text.
+   * New events get a pointer once. Events it has not acknowledged get a reminder every so often, so a
+   * Commander that forgot to acknowledge, or lost its context, is brought back to them.
+   */
   private async wake(): Promise<void> {
     // While the captain is away the afk daemon triages; the wake is delivered on return.
     if (this.store.isAfkActive()) return;
     const commander = this.store.listAgents().find((a) => a.role === 'commander' && a.state !== 'retired' && a.endpoint);
     if (!commander) return;
-    const cursor = Number(this.store.getSetting('wake_cursor') ?? 0);
-    const pending = this.store.listEvents({ afterSeq: cursor }).filter((e) => ACTIONABLE.has(e.kind) && e.agentId !== commander.id);
-    if (!pending.length) return;
+    const acked = Number(this.store.getSetting('events_cursor') ?? 0);
+    const woken = Number(this.store.getSetting('wake_cursor') ?? 0);
+    const unacked = this.store.listEvents({ afterSeq: acked }).filter((e) => ACTIONABLE.has(e.kind) && e.agentId !== commander.id);
+    if (!unacked.length) return;
+    const fresh = unacked.filter((e) => e.seq > woken);
+    const reminder = !fresh.length;
+    if (reminder && this.now() - Number(this.store.getSetting('wake_at') ?? 0) < this.rewakeAfter) return;
     const verdict = await this.mc.verdict(commander);
     if (verdict.state !== 'idle') return;
-    const summary = pending.map((e) => `${e.kind} ${e.agentId}`).join(', ');
-    await this.tmux.sendText(commander.endpoint!, `[mc wake] ${pending.length} new event(s): ${summary}. Run: mc events`);
-    await new Promise((r) => setTimeout(r, 150));
-    await this.tmux.sendKeys(commander.endpoint!, 'Enter');
-    this.store.setSetting('wake_cursor', String(pending[pending.length - 1]!.seq));
+    const list = (reminder ? unacked : fresh).map((e) => `${e.kind} ${e.agentId}`).join(', ');
+    const text = reminder
+      ? `[mc wake] reminder: ${unacked.length} event(s) not yet acknowledged: ${list}. Run: mc events, handle them, then run the ack command it prints`
+      : `[mc wake] ${fresh.length} new event(s): ${list}. Run: mc events`;
+    // If a person is typing to the Commander, or a dialog is open, wait for the next tick.
+    try {
+      await this.mc.sendToAgent(commander, { text });
+    } catch (err) {
+      if (err instanceof McError) return;
+      throw err;
+    }
+    this.store.setSetting('wake_cursor', String(unacked[unacked.length - 1]!.seq));
+    this.store.setSetting('wake_at', String(this.now()));
   }
 
   /** Poll until the signal aborts. */

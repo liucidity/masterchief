@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { classifyAgent, lastHookEvent } from './busy.js';
-import { claudeHarness, registerClaudeTrust } from './claude.js';
+import { chmod, stat } from 'node:fs/promises';
+import { claudeComposerState, claudeHarness, editClaudeConfig, registerClaudeTrust, unregisterClaudeTrust } from './claude.js';
 import { getHarness, listHarnesses } from './harness.js';
 
 let dir: string;
@@ -32,7 +33,7 @@ test('prepare builds the command, env and a settings file with all four hooks', 
   expect(l.command).toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', '--append-system-prompt', 'be brief']));
   expect(l.env).toMatchObject({ MC_AGENT_ID: 'pilot-1', MC_ROLE: 'pilot' });
   const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
-  expect(Object.keys(settings.hooks).sort()).toEqual(['SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
+  expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'PreToolUse', 'SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
   expect((await prep()).gen).not.toBe(l.gen);
 });
 
@@ -87,14 +88,34 @@ test('classification: a gone process wins, other incarnations are ignored, and g
   expect(await classifyAgent({ harness: { ...claudeHarness, semanticBusy: false }, endpoint: 'alive', hookLog: log, gen: l.gen })).toMatchObject({ state: 'unknown', source: 'no-semantic-source' });
 });
 
-test('a guard command becomes a PreToolUse hook for every tool, and unsafe arguments are refused', async () => {
+test('a guard command joins the PreToolUse hook for every tool, and unsafe arguments are refused', async () => {
   const l = await prep({ guardCommand: ['/usr/bin/node', '/opt/guard.js', '--role', 'pilot', '--worktree', '/w/t'] });
   const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
-  expect(settings.hooks.PreToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: "'/usr/bin/node' '/opt/guard.js' '--role' 'pilot' '--worktree' '/w/t'" }] }]);
-  expect(Object.keys(settings.hooks)).toContain('Stop');
+  expect(settings.hooks.PreToolUse).toHaveLength(1);
+  expect(settings.hooks.PreToolUse[0].matcher).toBe('*');
+  const commands = settings.hooks.PreToolUse[0].hooks.map((h: { command: string }) => h.command);
+  expect(commands).toHaveLength(2);
+  expect(commands[0]).toContain("'working'");
+  expect(commands[1]).toBe("'/usr/bin/node' '/opt/guard.js' '--role' 'pilot' '--worktree' '/w/t'");
   const without = JSON.parse(await readFile((await prep()).command.at(2)!, 'utf8'));
-  expect(without.hooks.PreToolUse).toBeUndefined();
+  expect(without.hooks.PreToolUse[0].hooks).toHaveLength(1);
   await expect(prep({ guardCommand: ['/bin/node', "it's"] })).rejects.toThrow(/unsafe argument/);
+});
+
+test('permission prompts and questions mark the agent as waiting, and the next tool call marks it working again', async () => {
+  const l = await prep();
+  const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
+  expect(settings.hooks.Notification.map((n: { matcher: string }) => n.matcher)).toEqual(['permission_prompt', 'elicitation_dialog', 'agent_needs_input']);
+  const fire = (cmd: string) => execFileSync('sh', ['-c', cmd]);
+  const verdict = () => classifyAgent({ harness: claudeHarness, endpoint: 'alive', hookLog: l.hookLog, gen: l.gen });
+  fire(settings.hooks.UserPromptSubmit[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'busy', event: 'prompt' });
+  fire(settings.hooks.Notification[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'waiting', event: 'waiting' });
+  fire(settings.hooks.PreToolUse[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'busy', event: 'working' });
+  fire(settings.hooks.Stop[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'idle' });
 });
 
 test('permission posture: acceptEdits with allow rules by default, bypass only when asked, and explicit tools win', async () => {
@@ -107,3 +128,112 @@ test('permission posture: acceptEdits with allow rules by default, bypass only w
   const custom = (await prep({ allowTools: ['Read'] })).command;
   expect(custom.slice(custom.indexOf('--allowedTools'), custom.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'Read']);
 });
+
+test('a long hook log is read from its tail without mistaking a cut line for an event', async () => {
+  const l = await prep();
+  const lines = [`${l.gen} 1 prompt`];
+  for (let i = 0; i < 4000; i++) lines.push(`${l.gen} ${2 + i} working`);
+  lines.push(`${l.gen} 9000 stop`);
+  await writeFile(l.hookLog!, lines.join('\n') + '\n');
+  expect((await readFile(l.hookLog!)).length).toBeGreaterThan(40_000);
+  expect(await lastHookEvent(l.hookLog!, l.gen)).toEqual({ event: 'stop', ts: 9000 });
+  // The final line is cut so only a fragment of an event name remains at the very end of a read window.
+  await writeFile(l.hookLog!, lines.slice(0, 3000).join('\n') + `\n${l.gen} 5000 sto`);
+  expect(await lastHookEvent(l.hookLog!, l.gen)).toEqual({ event: 'working', ts: 2 + 2998 });
+});
+
+const RULE = '─'.repeat(80);
+const SCREEN = (box: string) =>
+  ['❯ Captain here. Please do the thing.', '', '● On it.', '', '✻ Churned for 3s', '', RULE, box, RULE, '  Haiku 4.5 | [██░░░░░░░░] 19% ctx', '  ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents'].join('\n');
+
+test('the input box is read from between the last two rules, ignoring earlier prompts in the transcript', () => {
+  expect(claudeComposerState(SCREEN('❯ '))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯'))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯ half a sentence'))).toBe('typing');
+  expect(claudeComposerState(SCREEN('❯ first line\n  second line'))).toBe('typing');
+  expect(claudeComposerState(SCREEN('❯ Try "how do I log an error?"'))).toBe('empty');
+  expect(claudeComposerState(SCREEN('❯ [Pasted text #1 +4 lines]'))).toBe('typing');
+});
+
+test('a dialog or an unfamiliar screen is never read as an empty box', () => {
+  const dialog = [
+    '● Fetch(https://example.com)', '', RULE, ' Fetch', ' Claude wants to fetch content from example.com', '╌'.repeat(80),
+    ' url: https://example.com/', '╌'.repeat(80), ' Do you want to allow Claude to fetch this content?', ' ❯ 1. Yes', '   2. Yes, and don\'t ask again for example.com', '   3. No, and tell Claude what to do differently (esc)',
+  ].join('\n');
+  expect(claudeComposerState(dialog)).toBe('unknown');
+  expect(claudeComposerState('just some output\nwith no box')).toBe('unknown');
+  expect(claudeComposerState('')).toBe('unknown');
+  const framedDialog = [RULE, ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', RULE, ' Esc to cancel'].join('\n');
+  expect(claudeComposerState(framedDialog)).toBe('typing');
+});
+
+describe_config_edits();
+
+function describe_config_edits() {
+  const read = async (f: string) => JSON.parse(await readFile(f, 'utf8'));
+
+  test('a write by Claude during our edit is kept: we re-read and apply our change on top of it', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, JSON.stringify({ theme: 'dark', projects: { '/old': { x: 1 } } }));
+    let calls = 0;
+    const wrote = await registerClaudeTrust(['/new'], file, {
+      onBeforeCommit: async () => {
+        calls++;
+        if (calls === 1) await writeFile(file, JSON.stringify({ theme: 'light', numStartups: 7, projects: { '/old': { x: 1 }, '/claude-added': { y: 2 } } }));
+      },
+    });
+    expect(wrote).toBe(true);
+    expect(calls).toBe(2);
+    const c = await read(file);
+    expect(c).toMatchObject({ theme: 'light', numStartups: 7 });
+    expect(c.projects['/claude-added']).toEqual({ y: 2 });
+    expect(c.projects['/new'].hasTrustDialogAccepted).toBe(true);
+    expect((await readdirSafe(dir)).filter((n) => n.includes('.mc-'))).toEqual([]);
+  });
+
+  test('a file that never stops changing is reported, not overwritten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{"a":1}');
+    let n = 0;
+    await expect(
+      editClaudeConfig(file, (c) => ((c.b = 1), true), { attempts: 3, onBeforeCommit: () => writeFile(file, `{"a":${++n + 1}}`) }),
+    ).rejects.toThrow(/kept changing/);
+    expect(await read(file)).toEqual({ a: n + 1 });
+    expect((await readdirSafe(dir)).filter((x) => x.includes('.mc-'))).toEqual([]);
+  });
+
+  test('a file that cannot be parsed is never overwritten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{"half": ');
+    await expect(editClaudeConfig(file, () => true, { attempts: 2 })).rejects.toThrow(/could not be read/);
+    expect(await readFile(file, 'utf8')).toBe('{"half": ');
+  });
+
+  test('the file keeps its mode, a new one is private, and an already-trusted path writes nothing', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, '{}');
+    await chmod(file, 0o640);
+    await registerClaudeTrust(['/a'], file);
+    expect((await stat(file)).mode & 0o777).toBe(0o640);
+    const before = await stat(file);
+    expect(await registerClaudeTrust(['/a'], file)).toBe(false);
+    expect((await stat(file)).mtimeMs).toBe(before.mtimeMs);
+    const fresh = join(dir, 'new', '.claude.json');
+    await registerClaudeTrust(['/a'], fresh);
+    expect((await stat(fresh)).mode & 0o777).toBe(0o600);
+  });
+
+  test('only worktrees MasterChief made are forgotten', async () => {
+    const file = join(dir, '.claude.json');
+    await writeFile(file, JSON.stringify({ projects: { '/repo/.mc/wt/pilot-1': { hasTrustDialogAccepted: true }, '/repo/.mc/wt/pilot-2': {}, '/home/me/app': { hasTrustDialogAccepted: true } } }));
+    expect(await unregisterClaudeTrust(['/repo/.mc/wt/pilot-1', '/home/me/app', '/repo/.mc/wt/never-seen'], file)).toBe(true);
+    expect(Object.keys((await read(file)).projects).sort()).toEqual(['/home/me/app', '/repo/.mc/wt/pilot-2']);
+    expect(await unregisterClaudeTrust(['/repo/.mc/wt/pilot-1'], file)).toBe(false);
+    expect(await unregisterClaudeTrust(['/home/me/app'], file)).toBe(false);
+    expect(Object.keys((await read(file)).projects)).toContain('/home/me/app');
+  });
+}
+
+async function readdirSafe(d: string): Promise<string[]> {
+  return (await import('node:fs/promises')).readdir(d);
+}

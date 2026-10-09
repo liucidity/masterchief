@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { registerHarness, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
+import { registerHarness, type ComposerState, type Harness, type HarnessLaunch, type HarnessPrepareOptions } from './harness.js';
 
 /** Tools a crew member may use without asking. The guard hook still screens every call. */
 export const CREW_TOOLS = ['Bash', 'Read', 'Glob', 'Grep', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
@@ -17,6 +18,9 @@ export const HOOK_EVENTS = {
   SessionEnd: 'session-end',
 } as const;
 
+/** Notification types that mean the agent is waiting on a person. */
+export const WAITING_NOTIFICATIONS = ['permission_prompt', 'elicitation_dialog', 'agent_needs_input'];
+
 const SAFE_PATH = /^[A-Za-z0-9_@%+=:,./~-]+$/;
 
 export function hookLogPath(stateDir: string, agentId: string): string {
@@ -28,52 +32,153 @@ function hookCommand(log: string, gen: string, event: string): string {
   return `printf '%s %s %s\\n' '${gen}' "$(date +%s)" '${event}' >> '${log}'`;
 }
 
-/** Per-agent settings that report turn lifecycle through the hook log. */
+/** Per-agent settings that report turn lifecycle and prompts through the hook log. */
 export function claudeHookSettings(log: string, gen: string, guard?: string[]): object {
   const hooks: Record<string, unknown> = {};
+  for (const [name, event] of Object.entries(HOOK_EVENTS)) {
+    hooks[name] = [{ hooks: [{ type: 'command', command: hookCommand(log, gen, event) }] }];
+  }
+  // One entry per notification type, so each matcher is a plain literal.
+  hooks.Notification = WAITING_NOTIFICATIONS.map((type) => ({
+    matcher: type,
+    hooks: [{ type: 'command', command: hookCommand(log, gen, 'waiting') }],
+  }));
+  // A tool call means the agent is working again. The guard, when present, screens the same call.
+  const preToolUse: { type: string; command: string }[] = [{ type: 'command', command: hookCommand(log, gen, 'working') }];
   if (guard) {
     for (const part of guard) {
       if (!SAFE_PATH.test(part)) throw new Error(`unsafe argument for a claude guard hook: ${part}`);
     }
-    hooks.PreToolUse = [{ matcher: '*', hooks: [{ type: 'command', command: guard.map((p) => `'${p}'`).join(' ') }] }];
+    preToolUse.push({ type: 'command', command: guard.map((p) => `'${p}'`).join(' ') });
   }
-  for (const [name, event] of Object.entries(HOOK_EVENTS)) {
-    hooks[name] = [{ hooks: [{ type: 'command', command: hookCommand(log, gen, event) }] }];
-  }
+  hooks.PreToolUse = [{ matcher: '*', hooks: preToolUse }];
   return { hooks };
+}
+
+/**
+ * Claude draws its input box between two full-width rules, with a prompt marker on the first
+ * line. A dialog has no such box, so anything unexpected reads as not ready. The empty-session
+ * placeholder suggestion counts as empty.
+ */
+export function claudeComposerState(screen: string): ComposerState {
+  const lines = screen.split('\n');
+  const rules = lines.flatMap((l, i) => (/^─{8,}\s*$/.test(l) ? [i] : []));
+  if (rules.length < 2) return 'unknown';
+  const [top, bottom] = rules.slice(-2) as [number, number];
+  const box = lines
+    .slice(top + 1, bottom)
+    .map((l) => l.replace(/^\s*[❯>]\s?/, '').trim())
+    .join('\n')
+    .trim();
+  if (!box || /^Try ".*"$/.test(box)) return 'empty';
+  return 'typing';
 }
 
 function claudeConfigFile(): string {
   return join(process.env.CLAUDE_CONFIG_DIR ?? homedir(), '.claude.json');
 }
 
+interface ClaudeConfig {
+  projects?: Record<string, Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface ConfigEditOptions {
+  attempts?: number;
+  /** Runs after the new file is written and before it is swapped in. Lets tests play a racing writer. */
+  onBeforeCommit?: () => Promise<void> | void;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 /**
- * Mark directories as trusted so a fresh worktree does not stop at Claude's
- * interactive workspace-trust dialog, which an autonomous pane cannot answer.
- * Refuses to touch an explicit decline.
+ * Edit Claude's config file without losing a write made by Claude itself. Claude does not honour any
+ * lock of ours, so this is optimistic: read, change, write a temp file, and only swap it in if the
+ * original is untouched, otherwise start again from what Claude wrote. The file keeps its mode.
+ * Returns whether anything was written.
  */
-export async function registerClaudeTrust(dirs: string[], configFile = claudeConfigFile()): Promise<void> {
-  let config: { projects?: Record<string, Record<string, unknown>> } = {};
-  try {
-    config = JSON.parse(await readFile(configFile, 'utf8')) as typeof config;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+export async function editClaudeConfig(file: string, mutate: (config: ClaudeConfig) => boolean, opts: ConfigEditOptions = {}): Promise<boolean> {
+  const attempts = opts.attempts ?? 8;
+  const signature = (st: Stats | undefined) => (st ? `${st.ino}:${st.size}:${st.mtimeMs}` : 'missing');
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const before = await stat(file).catch(() => undefined);
+    let config: ClaudeConfig = {};
+    if (before) {
+      try {
+        config = JSON.parse(await readFile(file, 'utf8')) as ClaudeConfig;
+      } catch {
+        // Claude may be part way through a write. Never overwrite what we cannot read.
+        await sleep(25 * (attempt + 1));
+        continue;
+      }
+    }
+    if (!mutate(config)) return false;
+    await mkdir(dirname(file), { recursive: true });
+    const tmp = `${file}.mc-${process.pid}-${randomUUID().slice(0, 8)}`;
+    await writeFile(tmp, JSON.stringify(config, null, 2), { mode: before ? before.mode & 0o777 : 0o600 });
+    await opts.onBeforeCommit?.();
+    if (signature(await stat(file).catch(() => undefined)) !== signature(before)) {
+      await rm(tmp, { force: true });
+      continue;
+    }
+    await rename(tmp, file);
+    return true;
   }
-  config.projects ??= {};
-  for (const dir of dirs) {
-    const entry = (config.projects[dir] ??= {});
-    entry.hasTrustDialogAccepted = true;
-  }
-  await mkdir(dirname(configFile), { recursive: true });
-  const tmp = `${configFile}.mc-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, JSON.stringify(config, null, 2));
-  await rename(tmp, configFile);
+  throw new Error(`could not update ${file}: it kept changing or could not be read`);
+}
+
+/**
+ * Mark directories as trusted so a fresh worktree does not stop at Claude's interactive
+ * workspace-trust dialog, which an autonomous pane cannot answer. Skips the write when they
+ * are all trusted already.
+ */
+export async function registerClaudeTrust(dirs: string[], configFile = claudeConfigFile(), opts: ConfigEditOptions = {}): Promise<boolean> {
+  return editClaudeConfig(
+    configFile,
+    (config) => {
+      config.projects ??= {};
+      let changed = false;
+      for (const dir of dirs) {
+        const entry = (config.projects[dir] ??= {});
+        if (entry.hasTrustDialogAccepted !== true) {
+          entry.hasTrustDialogAccepted = true;
+          changed = true;
+        }
+      }
+      return changed;
+    },
+    opts,
+  );
+}
+
+/** Where MasterChief keeps agent worktrees; only entries under here are ever forgotten. */
+const OWN_WORKTREE = /\/\.mc\/wt\/[^/]+$/;
+
+/** Forget the trust entry for a worktree MasterChief made, once the worktree is gone. */
+export async function unregisterClaudeTrust(dirs: string[], configFile = claudeConfigFile(), opts: ConfigEditOptions = {}): Promise<boolean> {
+  const own = dirs.filter((d) => OWN_WORKTREE.test(d));
+  if (!own.length) return false;
+  return editClaudeConfig(
+    configFile,
+    (config) => {
+      let changed = false;
+      for (const dir of own) {
+        if (config.projects && dir in config.projects) {
+          delete config.projects[dir];
+          changed = true;
+        }
+      }
+      return changed;
+    },
+    opts,
+  );
 }
 
 export const claudeHarness: Harness = {
   id: 'claude',
   efforts: CLAUDE_EFFORTS,
   semanticBusy: true,
+  composerState: claudeComposerState,
   exitText: '/exit',
   interruptKeys: ['Escape'],
 
@@ -83,6 +188,10 @@ export const claudeHarness: Harness = {
       return `invalid effort for claude: ${effort} (use ${CLAUDE_EFFORTS.join(', ')})`;
     }
     return null;
+  },
+
+  async forget(opts) {
+    if (opts.trust !== false) await unregisterClaudeTrust([opts.cwd], opts.trust?.configFile);
   },
 
   async prepare(opts: HarnessPrepareOptions): Promise<HarnessLaunch> {

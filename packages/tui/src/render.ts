@@ -98,10 +98,10 @@ function table<T>(cols: Column<T>[], rows: T[], o: RenderOptions): { head: strin
   return { head, rows: body };
 }
 
-const STATE_GLYPH: Record<string, string> = { busy: '●', idle: '○', starting: '◌', unknown: '?', dead: '×', stopped: '·', retired: '·' };
+const STATE_GLYPH: Record<string, string> = { busy: '●', waiting: '!', idle: '○', starting: '◌', unknown: '?', dead: '×', stopped: '·', retired: '·' };
 const stateText = (s: string) => `${STATE_GLYPH[s] ?? '?'} ${s}`;
 const stateStyle = (s: string): Style | Style[] | undefined =>
-  ({ busy: 'green', idle: 'cyan', starting: 'yellow', unknown: 'yellow', dead: 'red', stopped: 'dim' } as Record<string, Style>)[s];
+  ({ busy: 'green', waiting: 'yellow', idle: 'cyan', starting: 'yellow', unknown: 'yellow', dead: 'red', stopped: 'dim' } as Record<string, Style>)[s];
 
 const missionStyle = (s: MissionRow['status']): Style | undefined =>
   ({ running: 'green', blocked: 'yellow', paused: 'yellow', planning: 'cyan', done: 'dim', aborted: 'dim' } as Record<string, Style>)[s];

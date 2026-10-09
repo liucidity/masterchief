@@ -18,13 +18,13 @@ const HELP = `mc - control the MasterChief crew
   mc mission list | mc mission show <id> | mc mission finish <id> [--abort]
   mc spawn --mission <id> --kind ship|sentinel --title <text> [--harness <name>] [--tier small]
            [--model <m>] [--effort <e>] [--brief <text|@file>] [--permission-mode <m>]
-  mc status [<task|agent>] [--lines <n>]
-  mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter]
+  mc status [<task|agent>] [--lines <n>] [--attention]
+  mc send <task|agent> [--text <t>] [--keys Enter,Escape] [--interrupt] [--no-enter] [--force]
   mc finding add --mission <id> --claim <t> --evidence <t> --confidence <0-1> | mc finding list --mission <id>
   mc review <task|agent> --verdict approve|reject|escalate --notes <why>
   mc land <task|agent> [--title <t>] [--body <b>]
   mc teardown <task|agent> [--force] [--outcome done|failed]
-  mc events [--after <seq>] [--peek] [--mission <id>]
+  mc events [--ack <seq>] [--after <seq>] [--mission <id>]
   mc watch [--interval <ms>] [--once] [--unknown-after <s>] [--stale-after <s>]
   mc watch --status | --background | --stop
   mc commander start [--harness <h>] [--model <m>] [--effort <e>] [--fresh]
@@ -35,6 +35,7 @@ const HELP = `mc - control the MasterChief crew
   mc cortana list | start <id> [--fresh] | send <id> --text <t> | status <id> | sync <id>
   mc cortana teardown <id> [--force] [--purge]
   mc dispatch [--init]
+  mc prune [--apply] [--force]
   mc harnesses
 
 Every command prints JSON. Errors go to stderr with exit code 1.`;
@@ -49,7 +50,7 @@ const oneOf = <T extends string>(v: string | undefined, flag: string, allowed: r
 };
 
 /** Every top-level command, for checks that documentation mentions only real ones. */
-export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'watch', 'commander', 'cortana', 'afk', 'attach', 'harnesses', 'help'];
+export const COMMANDS = ['project', 'mission', 'spawn', 'status', 'send', 'land', 'teardown', 'events', 'review', 'finding', 'dispatch', 'prune', 'watch', 'commander', 'cortana', 'afk', 'attach', 'harnesses', 'help'];
 
 /** Runs one mc command line. Returns the process exit code. */
 export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number> {
@@ -120,8 +121,10 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       }
 
       case 'status': {
-        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { lines: { type: 'string' } } });
-        print(await mc.status(positionals[0], { lines: values.lines ? Number(values.lines) : undefined }));
+        const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { lines: { type: 'string' }, attention: { type: 'boolean' } } });
+        if (positionals[0]) return (print(await mc.status(positionals[0], { lines: values.lines ? Number(values.lines) : undefined })), 0);
+        const fleet = await mc.status();
+        print(values.attention ? fleet.filter((r) => r.attention) : fleet);
         return 0;
       }
 
@@ -129,9 +132,9 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
         const { values, positionals } = parseArgs({
           args: rest,
           allowPositionals: true,
-          options: { text: { type: 'string' }, keys: { type: 'string' }, interrupt: { type: 'boolean' }, 'no-enter': { type: 'boolean' } },
+          options: { text: { type: 'string' }, keys: { type: 'string' }, interrupt: { type: 'boolean' }, 'no-enter': { type: 'boolean' }, force: { type: 'boolean' } },
         });
-        print(await mc.send(need(positionals[0], 'task (positional)'), { text: values.text, keys: values.keys?.split(',').filter(Boolean), interrupt: values.interrupt, noEnter: values['no-enter'] }));
+        print(await mc.send(need(positionals[0], 'task (positional)'), { text: values.text, keys: values.keys?.split(',').filter(Boolean), interrupt: values.interrupt, noEnter: values['no-enter'], force: values.force }));
         return 0;
       }
 
@@ -166,8 +169,8 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       }
 
       case 'events': {
-        const { values } = parseArgs({ args: rest, options: { after: { type: 'string' }, peek: { type: 'boolean' }, mission: { type: 'string' } } });
-        print(mc.events({ after: values.after !== undefined ? Number(values.after) : undefined, peek: values.peek, mission: values.mission }));
+        const { values } = parseArgs({ args: rest, options: { after: { type: 'string' }, ack: { type: 'string' }, mission: { type: 'string' } } });
+        print(mc.events({ after: values.after !== undefined ? Number(values.after) : undefined, ack: values.ack !== undefined ? Number(values.ack) : undefined, mission: values.mission }));
         return 0;
       }
 
@@ -296,6 +299,12 @@ export async function runCli(argv: string[], mc: Mc, io: CliIO): Promise<number>
       case 'dispatch': {
         const { values } = parseArgs({ args: rest, options: { init: { type: 'boolean' } } });
         print(values.init ? await mc.dispatchInit() : await mc.dispatchInfo());
+        return 0;
+      }
+
+      case 'prune': {
+        const { values } = parseArgs({ args: rest, options: { apply: { type: 'boolean' }, force: { type: 'boolean' } } });
+        print(await mc.prune({ apply: values.apply, force: values.force }));
         return 0;
       }
 

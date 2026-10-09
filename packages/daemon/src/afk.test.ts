@@ -108,6 +108,7 @@ test('events are sorted into things that need a human and things that do not', a
   ev('cortana-x', 'finished', { role: 'cortana' });
   ev('commander', 'finished', { role: 'commander' });
   ev(pilot.agentId, 'blocked', { taskId: pilot.taskId, reason: 'no-events-yet', tail: 'trust this folder?' });
+  ev(pilot.agentId, 'blocked', { taskId: pilot.taskId, reason: 'awaiting-input', tail: 'Allow this fetch?' });
   ev(pilot.agentId, 'dead', { taskId: pilot.taskId, tail: 'bye' });
   ev(pilot.agentId, 'stale', { taskId: pilot.taskId, count: 1 });
   ev(pilot.agentId, 'stale', { taskId: pilot.taskId, count: 2 });
@@ -117,12 +118,13 @@ test('events are sorted into things that need a human and things that do not', a
 
   const items = store.listAfkItems();
   expect(items.map((i) => [i.kind, i.needsHuman])).toEqual([
-    ['ready', false], ['report', false], ['cortana-report', false], ['blocked', true], ['dead', true], ['stale', false], ['stale', true], ['landed', false],
+    ['ready', false], ['report', false], ['cortana-report', false], ['blocked', true], ['blocked', true], ['dead', true], ['stale', false], ['stale', true], ['landed', false],
   ]);
   expect(items[0]!.summary).toBe(`pilot ${pilot.agentId} finished "login form": ready for review`);
   expect(items[1]!.summary).toContain('report not written');
   expect(items[3]!.detail).toBe('trust this folder?');
-  expect(items[4]!.summary).toContain('left unlanded work');
+  expect(items[4]!.summary).toContain('waiting for input');
+  expect(items[5]!.summary).toContain('left unlanded work');
 });
 
 test('while away the Commander is not nudged; on return it gets one pointer and the brief is kept', async () => {
@@ -144,12 +146,15 @@ test('while away the Commander is not nudged; on return it gets one pointer and 
 
   const brief = await mc.afk.stop();
   expect(brief.activity.map((a) => a.kind)).toEqual(['ready']);
+  expect(mc.events().events).toEqual([]); // the brief covers everything up to now, so nothing is left to remind about
   expect(brief.text).toContain('Away for');
   expect(brief.text).toContain('meeting');
   expect(brief.text).toContain('Nothing needs a decision.');
   await waitFor(async () => (await tmux.capture(ep, 80)).includes('[mc afk-return] 1 item(s) queued'));
   expect(store.listAfkItems()).toEqual([]);
-  expect(mc.afk.brief({ last: true })).toEqual(brief);
+  const { pointerSent, ...stored } = brief;
+  expect(pointerSent).toBe(true);
+  expect(mc.afk.brief({ last: true })).toEqual(stored);
   expect(() => mc.afk.brief()).not.toThrow();
 
   // The normal wake must not replay what the brief already covered.
@@ -198,3 +203,20 @@ test('the daemon loop triages in the background until aborted', async () => {
   await running;
   expect((await mc.lockStatus('afk.pid')).running).toBe(false);
 });
+
+test('on return the pointer is not typed over the captain, but the brief is still handed over', async () => {
+  const m = await setup();
+  const launch = await fakeHarness.prepare({ agentId: 'commander', role: 'commander', cwd: repo, stateDir: join(home, 'state'), initialPrompt: 'start' });
+  const ep = await tmux.create({ name: 'commander', cwd: repo, command: launch.command, env: launch.env });
+  store.createAgent({ id: 'commander', role: 'commander', harness: 'fake', endpoint: ep, gen: launch.gen, hookLog: launch.hookLog });
+  await waitFor(async () => (await mc.verdict(store.getAgent('commander')!)).state === 'idle');
+  await mc.afk.start();
+  store.addEvent({ missionId: m.id, agentId: 'pilot-x', kind: 'dead', payload: { role: 'pilot' } });
+  await tmux.sendText(ep, 'draft: typing as the captain returns');
+  await waitFor(async () => (await tmux.capture(ep, 30)).includes('draft: typing as the captain returns'));
+  const brief = await mc.afk.stop();
+  expect(brief.pointerSent).toBe(false);
+  expect(brief.needsYou).toHaveLength(1);
+  expect(await tmux.capture(ep, 30)).not.toContain('[mc afk-return]');
+  expect(mc.afk.brief({ last: true }).needsYou).toHaveLength(1);
+}, 20_000);

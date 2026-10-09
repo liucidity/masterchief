@@ -55,10 +55,11 @@ Run `mc help` for the full list.
 | `mc project add\|list` | Register the repositories the crew may work on. |
 | `mc mission new\|list\|show\|finish` | Build or investigate missions. |
 | `mc spawn` | Start a pilot (`--kind ship`) or sentinel (`--kind sentinel`) with a concrete harness, model and effort. |
-| `mc status`, `mc send`, `mc teardown` | Inspect, steer and remove an agent. Teardown refuses while work is unlanded. |
+| `mc status`, `mc send`, `mc teardown` | Inspect, steer and remove an agent. `mc status --attention` lists only agents that need something. Text sends refuse while an agent waits at a prompt or has a draft. Teardown refuses while work is unlanded. |
 | `mc review`, `mc land` | Record a verdict, then deliver an approved branch by project mode. |
 | `mc finding add\|list` | Record what held up from an investigation. |
-| `mc events` | What changed since you last asked. |
+| `mc events` | Unacknowledged events, with the command to acknowledge them (`mc events --ack <n>`). |
+| `mc prune` | Find worktrees left behind by a crash. `--apply` removes the ones with no unlanded work. |
 | `mc watch` | The watcher: wakes the Commander only when something needs it. |
 | `mc dispatch` | The captain's dispatch rules and the available harnesses. |
 | `mc commander`, `mc attach` | Start, stop and attach to the Commander. |
@@ -69,8 +70,8 @@ Run `mc help` for the full list.
 
 - **No server.** Commands read and write one SQLite database and tmux, then exit. The only long-lived process is the watcher, plus the optional away daemon.
 - **Worktrees.** Each agent gets `.mc/wt/<agent>` on branch `mc/<mission>/<agent>`, with its own ports and temp directory. The worktree creator sits behind a provider interface so a pool-backed one can replace it later.
-- **Busy state.** Claude Code reports turn start and end through hooks. For a CLI that cannot, `mc` records the prompt when it sends it. Unknown is never treated as idle or busy.
-- **Wakes.** The watcher records `finished`, `blocked`, `stale` and `dead` events and types one short line into the Commander's terminal, only between its turns and never including task text.
+- **Busy state.** Claude Code reports turn start and end, tool calls, and permission prompts through hooks, so an agent is `busy`, `waiting` (needs a person), `idle`, `dead` or `unknown`. For a CLI that cannot, `mc` records the prompt when it sends it. Unknown is never treated as idle or busy.
+- **Wakes.** The watcher records `finished`, `blocked`, `stale` and `dead` events and types one short line into the Commander's terminal. It does so only between the Commander's turns, only when its input box is empty, and never with task text. Events stay unacknowledged until the Commander runs the ack command, and a reminder follows if it never does.
 - **Landing.** A branch lands only after an approving `mc review`. `local-only` fast-forwards the default branch, and the PR modes push the branch and open a pull request with `gh`.
 - **Dispatch.** `config/dispatch.md` holds plain-language rules that the Commander reads. `config/roles.json` sets harness, model and effort per role, resolved mission over project over global, with a `small` tier for short high-volume work.
 
@@ -83,7 +84,8 @@ Be clear about what that does and does not give you.
 - The shell check is a heuristic. It cannot see what a script or `python -c` does, and `/tmp` stays writable.
 - Pilots run in `acceptEdits` mode with explicit allow rules. The `bypassPermissions` flag is opt-in (`--permission-mode`) because it raises a one-time, machine-wide consent dialog that no agent can answer.
 - A Codex crew member has no guard at all, because its hook layer must stay off. It is isolated by its worktree alone.
-- Agents are never answered at permission or trust dialogs. A stuck agent is reported as `blocked` and left for a person.
+- Agents are never answered at permission or trust dialogs. A stuck agent is reported as `blocked` and left for a person, and `mc send --text` refuses to type into a prompt or over a draft.
+- Starting a Claude crew member adds a trust entry for its worktree to `~/.claude.json`, using a compare-and-swap edit that keeps the file's mode, and teardown removes it again. A small race window with Claude's own writes remains.
 
 ## Away mode
 

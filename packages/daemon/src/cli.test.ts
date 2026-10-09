@@ -82,7 +82,13 @@ test('a full session through the command line', async () => {
   expect((await run('send', spawned.agentId, '--text', 'second')).json).toEqual({ ok: true });
   expect((await run('status')).json).toHaveLength(1);
   expect((await run('mission', 'show', mission.id.slice(0, 8))).json.tasks).toHaveLength(1);
-  expect((await run('events', '--peek')).json.map((e: { kind: string }) => e.kind)).toEqual(['spawned']);
+  const ev = (await run('events')).json;
+  expect(ev.events.map((e: { kind: string }) => e.kind)).toEqual(['spawned']);
+  expect(ev.ack).toBe(`mc events --ack ${ev.next}`);
+  expect((await run('events')).json.events).toHaveLength(1);
+  expect((await run('events', '--ack', String(ev.next))).json).toMatchObject({ events: [], acknowledged: ev.next, ack: null });
+  expect((await run('events', '--ack', '999')).err).toContain('cannot acknowledge 999');
+  expect((await run('status', '--attention')).json[0].attention).toMatch(/finished: review its diff/);
 
   expect((await run('teardown', spawned.agentId)).json).toMatchObject({ ok: true });
   expect((await run('status')).json).toEqual([]);

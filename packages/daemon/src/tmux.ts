@@ -89,8 +89,24 @@ export class TmuxBackend implements SessionBackend {
     }
   }
 
-  async destroy(endpoint: string): Promise<void> {
+  /**
+   * Close the window and wait for its program to finish exiting. A CLI that is told to hang up may
+   * still be writing its config on the way out, and anything done to that config sooner would be
+   * overwritten by it.
+   */
+  async destroy(endpoint: string, waitMs = 8000): Promise<void> {
+    const pid = Number((await this.tmux('display-message', '-p', '-t', endpoint, '#{pane_pid}').catch(() => '')).trim());
     await this.tmux('kill-window', '-t', endpoint).catch(() => undefined);
+    if (!(pid > 1)) return;
+    const end = Date.now() + waitMs;
+    while (Date.now() < end) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
   }
 
   async list(): Promise<SessionInfo[]> {
