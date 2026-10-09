@@ -196,3 +196,22 @@ test('run stops when aborted', async () => {
   await done;
   expect(store.listEvents().some((e) => e.kind === 'finished')).toBe(true);
 });
+
+test('a permission prompt is reported at once as blocked, then the agent carries on without more alarms', async () => {
+  const r = await start('fake', 'job');
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle');
+  const w = watcher();
+  await tick(w);
+  await mc.send(r.agentId, { text: 'ask me' });
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'waiting');
+  const events = await tick(w);
+  expect(kinds(events)).toEqual(['blocked']);
+  expect(events[0]!.payload).toMatchObject({ reason: 'awaiting-input', role: 'pilot' });
+  expect(store.getAgent(r.agentId)?.state).toBe('waiting');
+  expect(await tick(w)).toEqual([]);
+
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'busy');
+  expect(await tick(w)).toEqual([]);
+  await waitFor(async () => (await mc.status(r.agentId)).verdict.state === 'idle');
+  expect(kinds(await tick(w))).toEqual(['finished']);
+}, 15_000);

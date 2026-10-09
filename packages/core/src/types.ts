@@ -10,8 +10,8 @@ export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
 export type TaskKind = 'ship' | 'sentinel';
 export type DeliveryMode = 'no-mistakes' | 'direct-pr' | 'local-only';
 export type AgentRole = 'commander' | 'pilot' | 'sentinel' | 'cortana';
-/** Semantic state of a terminal agent. Unknown is never promoted to idle or busy. */
-export type AgentState = 'starting' | 'busy' | 'idle' | 'unknown' | 'dead' | 'retired';
+/** Semantic state of a terminal agent. Waiting means it needs a human. Unknown is never promoted to idle or busy. */
+export type AgentState = 'starting' | 'busy' | 'waiting' | 'idle' | 'unknown' | 'dead' | 'retired';
 export type CortanaRoute = 'local';
 export type WorkspaceAccess = 'rw' | 'ro';
 export type Verdict = 'approve' | 'reject' | 'escalate';

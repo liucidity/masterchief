@@ -119,7 +119,14 @@ export class Afk {
         }
         return item('ready', false, `pilot ${agentId} finished${title}: ready for review`);
       case 'blocked':
-        return item('blocked', true, `${agentId} looks stuck (${String(p.reason ?? 'no signal')}), probably at a prompt`, String(p.tail ?? ''));
+        return item(
+          'blocked',
+          true,
+          p.reason === 'awaiting-input'
+            ? `${agentId} is waiting for input (a permission prompt or a question)${title}`
+            : `${agentId} looks stuck (${String(p.reason ?? 'no signal')}), probably at a prompt`,
+          String(p.tail ?? ''),
+        );
       case 'dead': {
         let extra = '';
         const agent = agentId ? this.store.getAgent(agentId) : undefined;

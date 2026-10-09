@@ -17,6 +17,9 @@ export const HOOK_EVENTS = {
   SessionEnd: 'session-end',
 } as const;
 
+/** Notification types that mean the agent is waiting on a person. */
+export const WAITING_NOTIFICATIONS = ['permission_prompt', 'elicitation_dialog', 'agent_needs_input'];
+
 const SAFE_PATH = /^[A-Za-z0-9_@%+=:,./~-]+$/;
 
 export function hookLogPath(stateDir: string, agentId: string): string {
@@ -28,18 +31,26 @@ function hookCommand(log: string, gen: string, event: string): string {
   return `printf '%s %s %s\\n' '${gen}' "$(date +%s)" '${event}' >> '${log}'`;
 }
 
-/** Per-agent settings that report turn lifecycle through the hook log. */
+/** Per-agent settings that report turn lifecycle and prompts through the hook log. */
 export function claudeHookSettings(log: string, gen: string, guard?: string[]): object {
   const hooks: Record<string, unknown> = {};
+  for (const [name, event] of Object.entries(HOOK_EVENTS)) {
+    hooks[name] = [{ hooks: [{ type: 'command', command: hookCommand(log, gen, event) }] }];
+  }
+  // One entry per notification type, so each matcher is a plain literal.
+  hooks.Notification = WAITING_NOTIFICATIONS.map((type) => ({
+    matcher: type,
+    hooks: [{ type: 'command', command: hookCommand(log, gen, 'waiting') }],
+  }));
+  // A tool call means the agent is working again. The guard, when present, screens the same call.
+  const preToolUse: { type: string; command: string }[] = [{ type: 'command', command: hookCommand(log, gen, 'working') }];
   if (guard) {
     for (const part of guard) {
       if (!SAFE_PATH.test(part)) throw new Error(`unsafe argument for a claude guard hook: ${part}`);
     }
-    hooks.PreToolUse = [{ matcher: '*', hooks: [{ type: 'command', command: guard.map((p) => `'${p}'`).join(' ') }] }];
+    preToolUse.push({ type: 'command', command: guard.map((p) => `'${p}'`).join(' ') });
   }
-  for (const [name, event] of Object.entries(HOOK_EVENTS)) {
-    hooks[name] = [{ hooks: [{ type: 'command', command: hookCommand(log, gen, event) }] }];
-  }
+  hooks.PreToolUse = [{ matcher: '*', hooks: preToolUse }];
   return { hooks };
 }
 

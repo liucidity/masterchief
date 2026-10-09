@@ -108,6 +108,7 @@ test('events are sorted into things that need a human and things that do not', a
   ev('cortana-x', 'finished', { role: 'cortana' });
   ev('commander', 'finished', { role: 'commander' });
   ev(pilot.agentId, 'blocked', { taskId: pilot.taskId, reason: 'no-events-yet', tail: 'trust this folder?' });
+  ev(pilot.agentId, 'blocked', { taskId: pilot.taskId, reason: 'awaiting-input', tail: 'Allow this fetch?' });
   ev(pilot.agentId, 'dead', { taskId: pilot.taskId, tail: 'bye' });
   ev(pilot.agentId, 'stale', { taskId: pilot.taskId, count: 1 });
   ev(pilot.agentId, 'stale', { taskId: pilot.taskId, count: 2 });
@@ -117,12 +118,13 @@ test('events are sorted into things that need a human and things that do not', a
 
   const items = store.listAfkItems();
   expect(items.map((i) => [i.kind, i.needsHuman])).toEqual([
-    ['ready', false], ['report', false], ['cortana-report', false], ['blocked', true], ['dead', true], ['stale', false], ['stale', true], ['landed', false],
+    ['ready', false], ['report', false], ['cortana-report', false], ['blocked', true], ['blocked', true], ['dead', true], ['stale', false], ['stale', true], ['landed', false],
   ]);
   expect(items[0]!.summary).toBe(`pilot ${pilot.agentId} finished "login form": ready for review`);
   expect(items[1]!.summary).toContain('report not written');
   expect(items[3]!.detail).toBe('trust this folder?');
-  expect(items[4]!.summary).toContain('left unlanded work');
+  expect(items[4]!.summary).toContain('waiting for input');
+  expect(items[5]!.summary).toContain('left unlanded work');
 });
 
 test('while away the Commander is not nudged; on return it gets one pointer and the brief is kept', async () => {

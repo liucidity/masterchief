@@ -27,6 +27,7 @@ const full = base({
   crew: [
     { id: 'pilot-3f2a', role: 'pilot', harness: 'claude', model: 'opus', effort: 'high', state: 'busy', task: 'OAuth callback' },
     { id: 'sentinel-77aa', role: 'sentinel', harness: 'codex', model: 'gpt-5.6-luna', effort: 'max', state: 'dead', task: null },
+    { id: 'pilot-9c1d', role: 'pilot', harness: 'claude', model: null, effort: null, state: 'waiting', task: 'needs approval' },
   ],
   cortana: [{ id: 'triage', scope: 'issue triage', state: 'idle', crew: 2 }],
   alerts: [
@@ -95,6 +96,7 @@ test('long text is cut with an ellipsis and states carry a glyph and a word', ()
   expect(text).toMatch(/Add OAuth login with Google and GitHub, including the.*…/);
   expect(text).toContain('● busy');
   expect(text).toContain('× dead');
+  expect(text).toContain('! waiting');
   expect(text).toContain('codex gpt-5.6-luna max');
   const narrow = render(full, { width: 80, height: 40, color: false, showAll: false }).join('\n');
   expect(narrow).not.toContain('ENGINE');
@@ -104,6 +106,7 @@ test('colour is applied to states and alert kinds only when asked', () => {
   const on = render(full, { width: 100, height: 40, color: true, showAll: false }).join('\n');
   expect(on).toContain('\x1b[32m● busy');
   expect(on).toContain('\x1b[31m× dead');
+  expect(on).toContain('\x1b[33m! waiting');
   expect(on).toContain('\x1b[33mblocked');
 });
 

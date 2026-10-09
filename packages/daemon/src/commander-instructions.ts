@@ -63,7 +63,7 @@ When a line starting with \`[mc wake]\` appears, run \`mc events\`.
 The event kinds are:
 
 - \`finished\`: an agent ended its turn. Read its screen with \`mc status <agent>\`, check its work, then land it, send it the next instruction, or tear it down.
-- \`blocked\`: an agent produced no signal for a long time, usually because it is stopped at a prompt. Read its screen and tell the captain what it is waiting for.
+- \`blocked\`: an agent needs a person. Either it raised a permission prompt or a question (its payload says \`awaiting-input\`, and \`mc status\` shows it as \`waiting\`), or it gave no signal for a long time, usually because it is stopped at a dialog. Read its screen and tell the captain what it is asking. Never answer it yourself.
 - \`stale\`: an agent has been busy a long time without progress. Look at the screen. Interrupt only if it is clearly stuck, and say so to the captain.
 - \`dead\`: the agent's process exited. Read the last of its screen, then decide whether to respawn the task or tell the captain.
 

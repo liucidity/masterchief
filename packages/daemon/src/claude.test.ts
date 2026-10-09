@@ -32,7 +32,7 @@ test('prepare builds the command, env and a settings file with all four hooks', 
   expect(l.command).toEqual(expect.arrayContaining(['--model', 'opus', '--effort', 'high', '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', '--append-system-prompt', 'be brief']));
   expect(l.env).toMatchObject({ MC_AGENT_ID: 'pilot-1', MC_ROLE: 'pilot' });
   const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
-  expect(Object.keys(settings.hooks).sort()).toEqual(['SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
+  expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'PreToolUse', 'SessionEnd', 'Stop', 'StopFailure', 'UserPromptSubmit']);
   expect((await prep()).gen).not.toBe(l.gen);
 });
 
@@ -87,14 +87,34 @@ test('classification: a gone process wins, other incarnations are ignored, and g
   expect(await classifyAgent({ harness: { ...claudeHarness, semanticBusy: false }, endpoint: 'alive', hookLog: log, gen: l.gen })).toMatchObject({ state: 'unknown', source: 'no-semantic-source' });
 });
 
-test('a guard command becomes a PreToolUse hook for every tool, and unsafe arguments are refused', async () => {
+test('a guard command joins the PreToolUse hook for every tool, and unsafe arguments are refused', async () => {
   const l = await prep({ guardCommand: ['/usr/bin/node', '/opt/guard.js', '--role', 'pilot', '--worktree', '/w/t'] });
   const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
-  expect(settings.hooks.PreToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: "'/usr/bin/node' '/opt/guard.js' '--role' 'pilot' '--worktree' '/w/t'" }] }]);
-  expect(Object.keys(settings.hooks)).toContain('Stop');
+  expect(settings.hooks.PreToolUse).toHaveLength(1);
+  expect(settings.hooks.PreToolUse[0].matcher).toBe('*');
+  const commands = settings.hooks.PreToolUse[0].hooks.map((h: { command: string }) => h.command);
+  expect(commands).toHaveLength(2);
+  expect(commands[0]).toContain("'working'");
+  expect(commands[1]).toBe("'/usr/bin/node' '/opt/guard.js' '--role' 'pilot' '--worktree' '/w/t'");
   const without = JSON.parse(await readFile((await prep()).command.at(2)!, 'utf8'));
-  expect(without.hooks.PreToolUse).toBeUndefined();
+  expect(without.hooks.PreToolUse[0].hooks).toHaveLength(1);
   await expect(prep({ guardCommand: ['/bin/node', "it's"] })).rejects.toThrow(/unsafe argument/);
+});
+
+test('permission prompts and questions mark the agent as waiting, and the next tool call marks it working again', async () => {
+  const l = await prep();
+  const settings = JSON.parse(await readFile(l.command[l.command.indexOf('--settings') + 1]!, 'utf8'));
+  expect(settings.hooks.Notification.map((n: { matcher: string }) => n.matcher)).toEqual(['permission_prompt', 'elicitation_dialog', 'agent_needs_input']);
+  const fire = (cmd: string) => execFileSync('sh', ['-c', cmd]);
+  const verdict = () => classifyAgent({ harness: claudeHarness, endpoint: 'alive', hookLog: l.hookLog, gen: l.gen });
+  fire(settings.hooks.UserPromptSubmit[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'busy', event: 'prompt' });
+  fire(settings.hooks.Notification[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'waiting', event: 'waiting' });
+  fire(settings.hooks.PreToolUse[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'busy', event: 'working' });
+  fire(settings.hooks.Stop[0].hooks[0].command);
+  expect(await verdict()).toMatchObject({ state: 'idle' });
 });
 
 test('permission posture: acceptEdits with allow rules by default, bypass only when asked, and explicit tools win', async () => {
@@ -106,4 +126,17 @@ test('permission posture: acceptEdits with allow rules by default, bypass only w
   expect(bypass).not.toContain('--allowedTools');
   const custom = (await prep({ allowTools: ['Read'] })).command;
   expect(custom.slice(custom.indexOf('--allowedTools'), custom.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', 'Read']);
+});
+
+test('a long hook log is read from its tail without mistaking a cut line for an event', async () => {
+  const l = await prep();
+  const lines = [`${l.gen} 1 prompt`];
+  for (let i = 0; i < 4000; i++) lines.push(`${l.gen} ${2 + i} working`);
+  lines.push(`${l.gen} 9000 stop`);
+  await writeFile(l.hookLog!, lines.join('\n') + '\n');
+  expect((await readFile(l.hookLog!)).length).toBeGreaterThan(40_000);
+  expect(await lastHookEvent(l.hookLog!, l.gen)).toEqual({ event: 'stop', ts: 9000 });
+  // The final line is cut so only a fragment of an event name remains at the very end of a read window.
+  await writeFile(l.hookLog!, lines.slice(0, 3000).join('\n') + `\n${l.gen} 5000 sto`);
+  expect(await lastHookEvent(l.hookLog!, l.gen)).toEqual({ event: 'working', ts: 2 + 2998 });
 });

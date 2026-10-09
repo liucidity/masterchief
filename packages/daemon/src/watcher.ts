@@ -77,6 +77,8 @@ export class Watcher {
         this.store.updateAgent(agent.id, { state: verdict.state });
         if (verdict.state === 'idle' && agent.role !== 'commander') emit(agent, 'finished', { event: verdict.event });
         if (verdict.state === 'dead') emit(agent, 'dead', { reason: verdict.source, tail: await this.tail(agent) });
+        // A prompt or question is a definite signal that a person is needed, so there is nothing to wait out.
+        if (verdict.state === 'waiting') emit(agent, 'blocked', { reason: 'awaiting-input', tail: await this.tail(agent) });
       }
 
       if (verdict.state === 'unknown') {
