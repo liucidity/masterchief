@@ -1,0 +1,110 @@
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { promisify } from 'node:util';
+import type { CreateSessionOptions, EndpointStatus, SessionBackend, SessionInfo } from './session-backend.js';
+
+const run = promisify(execFile);
+
+export interface TmuxOptions {
+  /** tmux socket name (-L). Isolates this backend's server from the user's own tmux. */
+  socket?: string;
+  /** Session that holds one window per agent. */
+  session?: string;
+}
+
+export class TmuxBackend implements SessionBackend {
+  private socket: string;
+  private session: string;
+
+  constructor(opts: TmuxOptions = {}) {
+    this.socket = opts.socket ?? 'masterchief';
+    this.session = opts.session ?? 'mc';
+  }
+
+  private async tmux(...args: string[]): Promise<string> {
+    const { stdout } = await run('tmux', ['-L', this.socket, ...args], { maxBuffer: 16 * 1024 * 1024 });
+    return stdout;
+  }
+
+  /**
+   * Windows must outlive their program so a crash is visible, and that has to be
+   * set before the program starts or a fast-failing command takes the server with it.
+   */
+  private async prepareServer(): Promise<void> {
+    await this.tmux(
+      'start-server', ';',
+      'set-option', '-g', 'exit-empty', 'off', ';',
+      'set-option', '-g', 'remain-on-exit', 'on',
+    );
+  }
+
+  async create(opts: CreateSessionOptions): Promise<string> {
+    await this.prepareServer();
+    const envArgs = Object.entries(opts.env ?? {}).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const base = ['-d', '-P', '-F', '#{window_id}', '-n', opts.name, '-c', opts.cwd, ...envArgs, ...(opts.command ?? [])];
+    let id: string;
+    try {
+      id = await this.tmux('new-window', '-t', `${this.session}:`, ...base);
+    } catch (err) {
+      if (!/can't find session|no current target|no server running|error connecting/i.test(String((err as Error).message))) throw err;
+      try {
+        id = await this.tmux('new-session', '-s', this.session, ...base);
+      } catch (err2) {
+        if (!/duplicate session/i.test(String((err2 as Error).message))) throw err2;
+        id = await this.tmux('new-window', '-t', `${this.session}:`, ...base);
+      }
+    }
+    return id.trim();
+  }
+
+  async sendText(endpoint: string, text: string): Promise<void> {
+    const buffer = `mc-${randomUUID()}`;
+    await this.tmux('set-buffer', '-b', buffer, '--', text);
+    await this.tmux('paste-buffer', '-p', '-d', '-b', buffer, '-t', endpoint);
+  }
+
+  async sendKeys(endpoint: string, ...keys: string[]): Promise<void> {
+    await this.tmux('send-keys', '-t', endpoint, ...keys);
+  }
+
+  async capture(endpoint: string, lines = 200): Promise<string> {
+    const out = await this.tmux('capture-pane', '-p', '-t', endpoint, '-S', `-${lines}`);
+    return out.replace(/\s+$/, '');
+  }
+
+  async status(endpoint: string): Promise<EndpointStatus> {
+    try {
+      const out = await this.tmux('list-windows', '-a', '-F', '#{window_id}\t#{pane_dead}');
+      const row = out.split('\n').find((l) => l.split('\t')[0] === endpoint);
+      if (!row) return 'missing';
+      return row.split('\t')[1] === '1' ? 'dead' : 'alive';
+    } catch {
+      return 'missing';
+    }
+  }
+
+  async destroy(endpoint: string): Promise<void> {
+    await this.tmux('kill-window', '-t', endpoint).catch(() => undefined);
+  }
+
+  async list(): Promise<SessionInfo[]> {
+    let out: string;
+    try {
+      out = await this.tmux('list-windows', '-t', `${this.session}:`, '-F', '#{window_id}\t#{window_name}\t#{pane_dead}');
+    } catch {
+      return [];
+    }
+    return out
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [endpoint, name, dead] = line.split('\t');
+        return { endpoint: endpoint!, name: name!, status: dead === '1' ? 'dead' : 'alive' } as SessionInfo;
+      });
+  }
+
+  /** Stop the whole tmux server for this socket. Used by tests. */
+  async killServer(): Promise<void> {
+    await this.tmux('kill-server').catch(() => undefined);
+  }
+}
